@@ -1,0 +1,540 @@
+{
+	"info": {
+		"_postman_id": "golang-live-tracking-api",
+		"name": "Golang Live Tracking API",
+		"description": "Testing collection for Golang Live Tracking API with Laravel Sanctum token authentication",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Setup",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"health"
+							]
+						},
+						"description": "Check if the Golang API server is running"
+					},
+					"response": []
+				},
+				{
+					"name": "Generate Bearer Token (Laravel)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Extract token from Laravel login response and set as collection variable",
+									"if (pm.response.code === 200) {",
+									"    const responseJson = pm.response.json();",
+									"    if (responseJson.success && responseJson.data && responseJson.data.token) {",
+									"        pm.collectionVariables.set('bearer_token', responseJson.data.token);",
+									"        console.log('Bearer token saved:', responseJson.data.token);",
+									"        pm.test('Token extracted successfully', function () {",
+									"            pm.expect(responseJson.data.token).to.not.be.empty;",
+									"        });",
+									"    } else {",
+									"        pm.test('Login failed - no token in response', function () {",
+									"            pm.expect.fail('No token found in response');",
+									"        });",
+									"    }",
+									"} else {",
+									"    pm.test('Login request failed', function () {",
+									"        pm.expect.fail('HTTP ' + pm.response.code + ' - ' + pm.response.status);",
+									"    });",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email_or_username\": \"henryaugusta8@gmail.com\",\n    \"password\": \"password\",\n    \"device_name\": \"Postman_Testing\"\n}"
+						},
+						"url": {
+							"raw": "{{laravel_base_url}}/api/mobile/login",
+							"host": [
+								"{{laravel_base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"login"
+							]
+						},
+						"description": "Login via Laravel to get Bearer token for testing"
+					},
+					"response": []
+				}
+			],
+			"description": "Initial setup and authentication"
+		},
+		{
+			"name": "Live Tracking API",
+			"item": [
+				{
+					"name": "Get Active Session",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/active-session",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"active-session"
+							]
+						},
+						"description": "Check if user has an active live tracking session"
+					},
+					"response": []
+				},
+				{
+					"name": "Start Mobile Session",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Extract session_id from response and set as collection variable",
+									"if (pm.response.code === 200) {",
+									"    const responseJson = pm.response.json();",
+									"    if (responseJson.success && responseJson.session_id) {",
+									"        pm.collectionVariables.set('session_id', responseJson.session_id);",
+									"        console.log('Session ID saved:', responseJson.session_id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"train_id\": 123,\n    \"train_number\": \"TEST-001\",\n    \"initial_lat\": -6.200000,\n    \"initial_lng\": 106.816666\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/start",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"start"
+							]
+						},
+						"description": "Start a new live tracking session (Jakarta coordinates)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Mobile Location",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"{{session_id}}\",\n    \"latitude\": -6.201000,\n    \"longitude\": 106.817000,\n    \"accuracy\": 5.0,\n    \"speed\": 60.5,\n    \"heading\": 180.0,\n    \"altitude\": 15.2\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/update",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"update"
+							]
+						},
+						"description": "Update GPS location for active session"
+					},
+					"response": []
+				},
+				{
+					"name": "Send Heartbeat",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"{{session_id}}\",\n    \"app_state\": \"foreground\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/heartbeat",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"heartbeat"
+							]
+						},
+						"description": "Send heartbeat to keep session alive"
+					},
+					"response": []
+				},
+				{
+					"name": "Recover Session",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"{{session_id}}\",\n    \"reason\": \"app_restart\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/recover",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"recover"
+							]
+						},
+						"description": "Recover a disconnected session"
+					},
+					"response": []
+				},
+				{
+					"name": "Stop Mobile Session (No Trip Save)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"{{session_id}}\",\n    \"save_trip\": false,\n    \"end_lat\": -6.202000,\n    \"end_lng\": 106.818000\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/stop",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"stop"
+							]
+						},
+						"description": "Stop live tracking session without saving trip"
+					},
+					"response": []
+				},
+				{
+					"name": "Stop Mobile Session (With Trip Save)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Laravel Sanctum token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"{{session_id}}\",\n    \"save_trip\": true,\n    \"from_station_id\": 1,\n    \"from_station_name\": \"Jakarta Kota\",\n    \"to_station_id\": 15,\n    \"to_station_name\": \"Bogor\",\n    \"end_lat\": -6.595038,\n    \"end_lng\": 106.816635,\n    \"total_distance_km\": 54.8,\n    \"max_speed_kmh\": 80.5,\n    \"avg_speed_kmh\": 45.2,\n    \"max_elevation_m\": 250,\n    \"min_elevation_m\": 8,\n    \"elevation_gain_m\": 242,\n    \"duration_seconds\": 4350,\n    \"max_speed_lat\": -6.350000,\n    \"max_speed_lng\": 106.800000,\n    \"max_elevation_lat\": -6.595038,\n    \"max_elevation_lng\": 106.816635\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/stop",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"stop"
+							]
+						},
+						"description": "Stop live tracking session and save trip with detailed statistics"
+					},
+					"response": []
+				}
+			],
+			"description": "Live tracking endpoints"
+		},
+		{
+			"name": "Error Cases",
+			"item": [
+				{
+					"name": "Invalid Token Test",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer invalid_token_here",
+								"description": "Invalid token"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/active-session",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"active-session"
+							]
+						},
+						"description": "Test with invalid token - should return 401"
+					},
+					"response": []
+				},
+				{
+					"name": "Missing Authorization Header",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/active-session",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"active-session"
+							]
+						},
+						"description": "Test without authorization header - should return 401"
+					},
+					"response": []
+				},
+				{
+					"name": "Invalid Session ID",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Authorization",
+								"value": "Bearer {{bearer_token}}",
+								"description": "Valid token"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"session_id\": \"invalid-uuid-format\",\n    \"latitude\": -6.200000,\n    \"longitude\": 106.816666\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/mobile/live-tracking/update",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"mobile",
+								"live-tracking",
+								"update"
+							]
+						},
+						"description": "Test with invalid session ID format - should return 400"
+					},
+					"response": []
+				}
+			],
+			"description": "Test error handling and validation"
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Auto-set timestamps for requests",
+					"pm.globals.set('timestamp', Math.floor(Date.now() / 1000));"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Global test script - log response time and status",
+					"pm.test('Response time is reasonable', function () {",
+					"    pm.expect(pm.response.responseTime).to.be.below(5000);",
+					"});",
+					"",
+					"console.log('Response Status:', pm.response.status);",
+					"console.log('Response Time:', pm.response.responseTime + 'ms');"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8081",
+			"type": "string",
+			"description": "Golang API base URL"
+		},
+		{
+			"key": "laravel_base_url", 
+			"value": "https://168railway.com",
+			"type": "string",
+			"description": "Laravel API base URL for token generation"
+		},
+		{
+			"key": "bearer_token",
+			"value": "PASTE_TOKEN_HERE",
+			"type": "string",
+			"description": "Bearer token from Laravel login (replace this)"
+		},
+		{
+			"key": "session_id",
+			"value": "",
+			"type": "string",
+			"description": "Session ID from start session response (auto-filled)"
+		}
+	]
+}
