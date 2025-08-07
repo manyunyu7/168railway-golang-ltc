@@ -143,6 +143,8 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
 ## Available Endpoints
 
 ### Public Endpoints (No Authentication Required)
+
+#### HTTP Endpoints
 - `GET /health` - Health check endpoint
 - `GET /api/active-train-list` - **New**: Public endpoint serving active trains list
   - Replaces direct S3 access: `https://is3.cloudhost.id/168railwaylivetracking/trains/trains-list.json`
@@ -154,6 +156,24 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
   - Frontend should use: `https://go-ltc.trainradar35.com/api/train/{trainNumber}`
   - Returns individual train data with passengers, positions, and tracking info
   - Returns 404 if train not found
+
+#### WebSocket Endpoint (Real-time Updates) ⚡
+- `WSS /ws/trains` - **New**: Real-time train tracking WebSocket
+  - URL: `wss://go-ltc.trainradar35.com/ws/trains`
+  - **Recommended for frontend** instead of HTTP polling
+  - Broadcasts comprehensive train updates every 5 seconds
+  - Includes individual passenger positions, not just train averages
+  - Lower bandwidth than HTTP polling
+  - Instant updates when trains move or passengers join/leave
+  
+**WebSocket Message Types:**
+- `initial_data` - Full trains list on connection
+- `train_updates` - Real-time updates with complete train data including:
+  - Individual passenger locations and timestamps  
+  - Average train position
+  - Passenger count and status
+  - Route information and data source
+- `ping/pong` - Connection health checking
 
 ### Protected Endpoints (Require Laravel Sanctum Token)
 All protected endpoints require `Authorization: Bearer {token}` header:
