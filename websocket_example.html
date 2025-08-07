@@ -37,9 +37,12 @@
     </div>
     
     <div>
-        <button onclick="connect()">Connect</button>
+        <button onclick="connect()">Connect WebSocket</button>
         <button onclick="disconnect()">Disconnect</button>
         <button onclick="sendPing()">Send Ping</button>
+        <button onclick="startHttpPolling()">Start HTTP Polling</button>
+        <button onclick="stopHttpPolling()">Stop HTTP Polling</button>
+        <button onclick="fetchTrainsData()">Test HTTP Fetch</button>
     </div>
     
     <div id="trains"></div>
@@ -51,7 +54,7 @@
         let ws = null;
         
         function connect() {
-            // Use the production WebSocket endpoint
+            // Try WebSocket first, fall back to HTTP polling if not available
             const wsUrl = 'wss://go-ltc.trainradar35.com/ws/trains';
             // For local testing: ws://localhost:8081/ws/trains
             
@@ -81,7 +84,9 @@
             };
             
             ws.onerror = function(error) {
-                addMessage('Error: ' + error);
+                addMessage('WebSocket Error: ' + error);
+                addMessage('WebSocket not available - falling back to HTTP polling');
+                startHttpPolling();
             };
         }
         
@@ -175,6 +180,38 @@
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
+        let httpPollingInterval = null;
+        
+        function startHttpPolling() {
+            addMessage('Starting HTTP polling fallback (every 5 seconds)');
+            
+            // Initial load
+            fetchTrainsData();
+            
+            // Poll every 5 seconds
+            httpPollingInterval = setInterval(fetchTrainsData, 5000);
+        }
+        
+        function stopHttpPolling() {
+            if (httpPollingInterval) {
+                clearInterval(httpPollingInterval);
+                httpPollingInterval = null;
+                addMessage('HTTP polling stopped');
+            }
+        }
+        
+        function fetchTrainsData() {
+            fetch('https://go-ltc.trainradar35.com/api/active-train-list')
+                .then(response => response.json())
+                .then(data => {
+                    addMessage('HTTP: Received trains list with ' + data.total + ' trains');
+                    displayTrains(data.trains);
+                })
+                .catch(error => {
+                    addMessage('HTTP Error: ' + error);
+                });
+        }
+
         // Auto-connect on page load
         window.onload = function() {
             connect();
