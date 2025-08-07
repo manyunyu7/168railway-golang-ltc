@@ -83,6 +83,9 @@ func main() {
 	// API routes
 	api := r.Group("/api")
 	{
+		// Public endpoint for active trains list (replaces direct S3 access)
+		api.GET("/active-train-list", liveTrackingHandler.GetActiveTrainsList)
+		
 		mobile := api.Group("/mobile")
 		{
 			// Protected live tracking routes

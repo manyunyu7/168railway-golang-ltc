@@ -118,3 +118,31 @@ func (s *S3Client) ListFiles(prefix string) ([]string, error) {
 
 	return files, nil
 }
+
+func (s *S3Client) GetJSONData(key string) (map[string]interface{}, error) {
+	// Use AWS SDK to get object
+	input := &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}
+
+	result, err := s.client.GetObject(input)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get from S3: %v", err)
+	}
+	defer result.Body.Close()
+
+	// Read the body
+	buf := new(bytes.Buffer)
+	_, err = buf.ReadFrom(result.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var jsonData map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &jsonData); err != nil {
+		return nil, err
+	}
+
+	return jsonData, nil
+}

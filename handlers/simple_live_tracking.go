@@ -26,6 +26,41 @@ func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *Simple
 	}
 }
 
+// GetActiveTrainsList - Public API endpoint to serve active trains list (proxy for S3)
+func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
+	fmt.Printf("DEBUG: Frontend requesting active trains list via API proxy\n")
+	
+	// Try to read trains-list.json from S3
+	trainsListData, err := h.s3.GetJSONData("trains/trains-list.json")
+	if err != nil {
+		fmt.Printf("DEBUG: trains-list.json not found, generating from active sessions\n")
+		// If file doesn't exist, generate it from active sessions
+		h.updateTrainsList()
+		
+		// Try again after generation
+		trainsListData, err = h.s3.GetJSONData("trains/trains-list.json")
+		if err != nil {
+			// Return empty response if still fails
+			c.JSON(http.StatusOK, gin.H{
+				"trains":      []interface{}{},
+				"total":       0,
+				"lastUpdated": time.Now().Format(time.RFC3339),
+				"source":      "golang-api-fallback",
+			})
+			return
+		}
+	}
+	
+	// Set proper CORS and cache headers
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+	
+	fmt.Printf("DEBUG: Serving trains list with %v trains\n", trainsListData["total"])
+	c.JSON(http.StatusOK, trainsListData)
+}
+
 // GetActiveSession - Check database for active sessions
 func (h *SimpleLiveTrackingHandler) GetActiveSession(c *gin.Context) {
 	user, exists := middleware.GetUserFromContext(c)
