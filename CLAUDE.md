@@ -149,6 +149,11 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
   - Frontend should use: `https://go-ltc.trainradar35.com/api/active-train-list`
   - Returns JSON with active trains, passenger counts, and last update times
   - Includes proper CORS headers and cache control
+- `GET /api/train/{trainNumber}` - **New**: Public endpoint serving individual train data
+  - Replaces direct S3 access: `https://is3.cloudhost.id/168railwaylivetracking/trains/train-{trainNumber}.json`
+  - Frontend should use: `https://go-ltc.trainradar35.com/api/train/{trainNumber}`
+  - Returns individual train data with passengers, positions, and tracking info
+  - Returns 404 if train not found
 
 ### Protected Endpoints (Require Laravel Sanctum Token)
 All protected endpoints require `Authorization: Bearer {token}` header:
