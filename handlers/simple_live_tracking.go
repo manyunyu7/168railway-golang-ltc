@@ -26,7 +26,7 @@ func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *Simple
 	}
 }
 
-// GetActiveSession - Simple version without Redis
+// GetActiveSession - Check database for active sessions
 func (h *SimpleLiveTrackingHandler) GetActiveSession(c *gin.Context) {
 	user, exists := middleware.GetUserFromContext(c)
 	if !exists {
@@ -37,13 +37,29 @@ func (h *SimpleLiveTrackingHandler) GetActiveSession(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("DEBUG: User %d requested active session check (S3-enabled, Redis-free)\n", user.ID)
+	fmt.Printf("DEBUG: User %d requested active session check (database-backed)\n", user.ID)
 	
-	c.JSON(http.StatusOK, gin.H{
-		"success":           true,
-		"has_active_session": false,
-		"message":           "S3-enabled, Redis-free implementation",
-	})
+	// Check database for active sessions (like Laravel cache)
+	var session models.LiveTrackingSession
+	result := h.db.Where("user_id = ? AND status = ?", user.ID, "active").First(&session)
+	
+	if result.Error == nil {
+		// Active session found
+		c.JSON(http.StatusOK, gin.H{
+			"success":           true,
+			"has_active_session": true,
+			"session_id":        session.SessionID,
+			"train_number":      session.TrainNumber,
+			"train_id":          session.TrainID,
+			"started_at":        session.StartedAt.Format(time.RFC3339),
+		})
+	} else {
+		// No active session
+		c.JSON(http.StatusOK, gin.H{
+			"success":           true,
+			"has_active_session": false,
+		})
+	}
 }
 
 // StartMobileSession - Simple version
@@ -72,8 +88,12 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		return
 	}
 
+	// Terminate any existing sessions for this user (like Laravel)
+	h.terminateUserSessions(user.ID)
+
 	sessionID := uuid.New().String()
-	fmt.Printf("DEBUG: Starting session %s for user %d, train %s (S3-enabled, Redis-free)\n", sessionID, user.ID, req.TrainNumber)
+	now := time.Now()
+	fmt.Printf("DEBUG: Starting session %s for user %d, train %s\n", sessionID, user.ID, req.TrainNumber)
 
 	// Generate train file data
 	trainData := models.TrainData{
@@ -112,13 +132,32 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 
 	fmt.Printf("DEBUG: Session %s stored in S3 file %s\n", sessionID, fileName)
 
+	// Store session in database (replaces Laravel cache)
+	session := models.LiveTrackingSession{
+		SessionID:     sessionID,
+		UserID:        user.ID,
+		UserType:      "authenticated",
+		ClientType:    "mobile",
+		TrainID:       req.TrainID,
+		TrainNumber:   req.TrainNumber,
+		FilePath:      fileName,
+		StartedAt:     now,
+		LastHeartbeat: now,
+		Status:        "active",
+	}
+
+	if err := h.db.Create(&session).Error; err != nil {
+		fmt.Printf("ERROR: Failed to save session to database: %v\n", err)
+		// Continue anyway - S3 file was created successfully
+	}
+
 	// Update trains list
 	h.updateTrainsList()
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
 		"session_id": sessionID,
-		"message":    "Mobile tracking session started successfully (S3-enabled, Redis-free)",
+		"message":    "Mobile tracking session started successfully",
 	})
 }
 
@@ -154,9 +193,23 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 	fmt.Printf("DEBUG: User %d updating location for session %s: (%.6f, %.6f)\n", 
 		user.ID, req.SessionID, req.Latitude, req.Longitude)
 
-	// Without Redis, we'll use a simple approach:
-	// Try to find the user's active train file and update it
-	trainFile, err := h.updateUserLocationInActiveTrainFile(user.ID, req)
+	// Validate session in database (like Laravel cache)
+	var session models.LiveTrackingSession
+	result := h.db.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
+	
+	if result.Error != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "Invalid session",
+		})
+		return
+	}
+
+	// Update heartbeat in database
+	h.db.Model(&session).Update("last_heartbeat", time.Now())
+
+	// Update location in S3 train file using session info
+	trainFile, err := h.updateLocationInTrainFile(session.FilePath, user.ID, req)
 	if err != nil {
 		fmt.Printf("ERROR: Failed to update location in S3: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -177,7 +230,7 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
-		"message": "Mobile location updated successfully (S3-enabled, Redis-free)",
+		"message": "Mobile location updated successfully",
 		"updated_file": trainFile,
 	})
 }
@@ -271,41 +324,82 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("DEBUG: User %d stopped session %s\n", user.ID, req.SessionID)
+	// Validate session in database
+	var session models.LiveTrackingSession
+	result := h.db.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
+	
+	if result.Error != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"success": false,
+			"message": "Invalid session",
+		})
+		return
+	}
+
+	fmt.Printf("DEBUG: User %d stopping session %s\n", user.ID, req.SessionID)
+
+	// Get train file data before removing user
+	fileName := session.FilePath
+	var tripSaved bool = false
+	
+	// Handle train file - remove user or delete entire file
+	err := h.handleStopSessionS3Operations(fileName, user.ID, req.SaveTrip != nil && *req.SaveTrip)
+	if err != nil {
+		fmt.Printf("ERROR: S3 operations failed: %v\n", err)
+	}
+
+	// Mark session as completed in database
+	h.db.Model(&session).Updates(models.LiveTrackingSession{
+		Status:    "completed",
+		UpdatedAt: time.Now(),
+	})
+
+	// Update trains list
+	h.updateTrainsList()
 
 	response := gin.H{
 		"success":    true,
-		"message":    "Mobile tracking session stopped successfully (Redis-free)",
-		"trip_saved": false,
-	}
-
-	if req.SaveTrip != nil && *req.SaveTrip {
-		response["trip_saved"] = false
-		response["message"] = "Trip saving not implemented in Redis-free version"
+		"message":    "Mobile tracking session stopped successfully",
+		"trip_saved": tripSaved,
 	}
 
 	c.JSON(http.StatusOK, response)
 }
 
+// Terminate user sessions (like Laravel)
+func (h *SimpleLiveTrackingHandler) terminateUserSessions(userID uint) {
+	fmt.Printf("DEBUG: Terminating existing sessions for user %d\n", userID)
+	
+	// Get all active sessions for this user
+	var sessions []models.LiveTrackingSession
+	h.db.Where("user_id = ? AND status = ?", userID, "active").Find(&sessions)
+	
+	for _, session := range sessions {
+		// Remove user from train file or delete entire file
+		h.handleStopSessionS3Operations(session.FilePath, userID, false)
+		
+		// Mark session as terminated
+		h.db.Model(&session).Update("status", "terminated")
+	}
+}
+
 // Helper function to update trains list
 func (h *SimpleLiveTrackingHandler) updateTrainsList() {
-	fmt.Printf("DEBUG: Updating trains list (S3-enabled, Redis-free)\n")
+	fmt.Printf("DEBUG: Updating trains list from active sessions\n")
 	
 	now := time.Now()
 	var activeTrains []interface{}
 	
-	// Scan common train file patterns to build the trains list
-	commonPatterns := []string{
-		"trains/train-KA-001.json",
-		"trains/train-KA-002.json", 
-		"trains/train-KA-123.json",
-		"trains/train-TEST.json",
-	}
+	// Get all active sessions from database
+	var sessions []models.LiveTrackingSession
+	h.db.Where("status = ?", "active").Find(&sessions)
 	
-	for _, fileName := range commonPatterns {
-		trainData, err := h.s3.GetTrainData(fileName)
+	// Build trains list from active sessions
+	for _, session := range sessions {
+		// Try to read train file to get current data
+		trainData, err := h.s3.GetTrainData(session.FilePath)
 		if err != nil {
-			continue // File doesn't exist or can't be read
+			continue // File doesn't exist anymore
 		}
 		
 		// Check if train has recent activity (within last 5 minutes)
@@ -330,7 +424,7 @@ func (h *SimpleLiveTrackingHandler) updateTrainsList() {
 		"trains":      activeTrains,
 		"total":       len(activeTrains),
 		"lastUpdated": now.Format(time.RFC3339),
-		"source":      "golang-s3-enabled-redis-free",
+		"source":      "golang-database-session-tracking",
 	}
 
 	// Upload to S3
@@ -342,8 +436,45 @@ func (h *SimpleLiveTrackingHandler) updateTrainsList() {
 	fmt.Printf("DEBUG: Updated trains-list.json with %d active trains\n", len(activeTrains))
 }
 
-// Helper function to update user location in active train files
-func (h *SimpleLiveTrackingHandler) updateUserLocationInActiveTrainFile(userID uint, req struct {
+// Handle S3 operations when stopping session
+func (h *SimpleLiveTrackingHandler) handleStopSessionS3Operations(fileName string, userID uint, saveTrip bool) error {
+	// Get current train data
+	trainData, err := h.s3.GetTrainData(fileName)
+	if err != nil {
+		return fmt.Errorf("failed to read train file %s: %v", fileName, err)
+	}
+
+	// Remove this user from passengers
+	var remainingPassengers []models.Passenger
+	for _, passenger := range trainData.Passengers {
+		if passenger.UserID != userID {
+			remainingPassengers = append(remainingPassengers, passenger)
+		}
+	}
+
+	if len(remainingPassengers) > 0 {
+		// Other passengers remain - update file
+		trainData.Passengers = remainingPassengers
+		h.recalculateAveragePosition(trainData)
+		trainData.LastUpdate = time.Now().Format(time.RFC3339)
+		
+		if err := h.s3.UploadJSON(fileName, *trainData); err != nil {
+			return fmt.Errorf("failed to update train file: %v", err)
+		}
+		fmt.Printf("DEBUG: Updated train file %s, removed user %d\n", fileName, userID)
+	} else {
+		// No passengers left - delete the file
+		if err := h.s3.DeleteFile(fileName); err != nil {
+			return fmt.Errorf("failed to delete train file: %v", err)
+		}
+		fmt.Printf("DEBUG: Deleted empty train file %s\n", fileName)
+	}
+
+	return nil
+}
+
+// Update location in specific train file  
+func (h *SimpleLiveTrackingHandler) updateLocationInTrainFile(fileName string, userID uint, req struct {
 	SessionID string   `json:"session_id" binding:"required"`
 	Latitude  float64  `json:"latitude" binding:"required,min=-90,max=90"`
 	Longitude float64  `json:"longitude" binding:"required,min=-180,max=180"`
@@ -352,58 +483,17 @@ func (h *SimpleLiveTrackingHandler) updateUserLocationInActiveTrainFile(userID u
 	Heading   *float64 `json:"heading,omitempty"`
 	Altitude  *float64 `json:"altitude,omitempty"`
 }) (string, error) {
-	fmt.Printf("DEBUG: Searching for user %d's active train file in S3\n", userID)
-	
-	// Since we don't have Redis, we'll implement a simple scanning approach:
-	// 1. Try to read trains-list.json to get potential train files
-	// 2. Scan each train file to find one containing this user
-	// 3. Update the passenger data in that file
-	
-	// Strategy: Try common train patterns or scan recent files
-	// For demonstration, let's try a few common patterns and then implement proper scanning
-	
-	commonPatterns := []string{
-		"trains/train-KA-001.json",
-		"trains/train-KA-002.json", 
-		"trains/train-KA-123.json",
-		"trains/train-TEST.json",
-	}
-	
-	// Try common patterns first
-	for _, fileName := range commonPatterns {
-		if updated, err := h.tryUpdateUserInTrainFile(fileName, userID, req); err == nil && updated {
-			return fileName, nil
-		}
-	}
-	
-	// If not found in common patterns, we could implement more advanced scanning
-	// For now, let's return empty (no file found)
-	fmt.Printf("DEBUG: User %d not found in common train file patterns\n", userID)
-	return "", nil // Return empty string (no error) if not found
-}
-
-// Helper function to try updating user location in a specific train file
-func (h *SimpleLiveTrackingHandler) tryUpdateUserInTrainFile(fileName string, userID uint, req struct {
-	SessionID string   `json:"session_id" binding:"required"`
-	Latitude  float64  `json:"latitude" binding:"required,min=-90,max=90"`
-	Longitude float64  `json:"longitude" binding:"required,min=-180,max=180"`
-	Accuracy  *float64 `json:"accuracy,omitempty"`
-	Speed     *float64 `json:"speed,omitempty"`
-	Heading   *float64 `json:"heading,omitempty"`
-	Altitude  *float64 `json:"altitude,omitempty"`
-}) (bool, error) {
-	// Try to get the train data from S3
+	// Get train data from S3
 	trainData, err := h.s3.GetTrainData(fileName)
 	if err != nil {
-		// File doesn't exist or can't be read - that's fine
-		return false, nil
+		return "", fmt.Errorf("failed to read train file: %v", err)
 	}
 	
-	// Look for this user in the passengers array
+	// Find and update this user's passenger data
 	userFound := false
 	for i := range trainData.Passengers {
 		if trainData.Passengers[i].UserID == userID {
-			// Update this passenger's location data
+			// Update passenger location data
 			trainData.Passengers[i].Lat = req.Latitude
 			trainData.Passengers[i].Lng = req.Longitude
 			trainData.Passengers[i].Timestamp = time.Now().UnixMilli()
@@ -413,30 +503,26 @@ func (h *SimpleLiveTrackingHandler) tryUpdateUserInTrainFile(fileName string, us
 			trainData.Passengers[i].Altitude = req.Altitude
 			trainData.Passengers[i].Status = "active"
 			userFound = true
-			
-			fmt.Printf("DEBUG: Found user %d in %s, updating location\n", userID, fileName)
 			break
 		}
 	}
 	
 	if !userFound {
-		return false, nil
+		return "", fmt.Errorf("user %d not found in train file %s", userID, fileName)
 	}
 	
-	// Recalculate average position
+	// Recalculate average position and update timestamp
 	h.recalculateAveragePosition(trainData)
-	
-	// Update last update timestamp
 	trainData.LastUpdate = time.Now().Format(time.RFC3339)
 	
 	// Upload updated data back to S3
 	if err := h.s3.UploadJSON(fileName, *trainData); err != nil {
-		return false, fmt.Errorf("failed to update train file %s: %v", fileName, err)
+		return "", fmt.Errorf("failed to update train file: %v", err)
 	}
 	
-	fmt.Printf("DEBUG: Successfully updated user %d location in %s\n", userID, fileName)
-	return true, nil
+	return fileName, nil
 }
+
 
 // Helper function to recalculate average position
 func (h *SimpleLiveTrackingHandler) recalculateAveragePosition(trainData *models.TrainData) {

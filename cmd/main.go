@@ -11,6 +11,7 @@ import (
 	"github.com/modernland/golang-live-tracking/config"
 	"github.com/modernland/golang-live-tracking/handlers"
 	"github.com/modernland/golang-live-tracking/middleware"
+	"github.com/modernland/golang-live-tracking/models"
 	"github.com/modernland/golang-live-tracking/utils"
 )
 
@@ -30,8 +31,8 @@ func main() {
 		log.Fatal("Failed to connect to database:", err)
 	}
 
-	// Skip auto migration to avoid key length issues - use existing Laravel tables
-	// db.AutoMigrate(&models.User{}, &models.PersonalAccessToken{}, &models.Trip{})
+	// Auto migrate only our session tracking table (skip Laravel tables)
+	db.AutoMigrate(&models.LiveTrackingSession{})
 
 	// Skip Redis for simple implementation
 	// redisClient := redis.NewClient(&redis.Options{
