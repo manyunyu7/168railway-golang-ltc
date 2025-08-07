@@ -191,16 +191,21 @@ Stop live tracking and optionally save trip.
 }
 ```
 
-#### **Stop with Mobile-Calculated Statistics** ⭐ **RECOMMENDED**
+#### **Stop with Mobile-Calculated Statistics & GPS Path** ⭐ **RECOMMENDED**
 ```json
 {
     "session_id": "uuid-session-id",
     "save_trip": true,
+    "train_relation": "Jakarta-Surabaya",
+    "from_station_id": 1,
+    "from_station_name": "Jakarta Gambir",
+    "to_station_id": 15,
+    "to_station_name": "Surabaya Gubeng",
     "trip_summary": {
-        "total_distance_km": 54.8,
-        "max_speed_kmh": 80.5,
-        "avg_speed_kmh": 45.2,
-        "duration_seconds": 4350,
+        "total_distance_km": 692.5,
+        "max_speed_kmh": 82.5,
+        "avg_speed_kmh": 65.2,
+        "duration_seconds": 25200,
         "max_elevation_m": 245,
         "min_elevation_m": 95,
         "elevation_gain_m": 150,
@@ -212,7 +217,36 @@ Stop live tracking and optionally save trip.
             "lat": -6.3123,
             "lng": 106.9234
         }
-    }
+    },
+    "gps_path": [
+        {
+            "lat": -6.1744,
+            "lng": 106.8294,
+            "timestamp": 1691427600000,
+            "speed": 0.0,
+            "altitude": 125.0,
+            "accuracy": 5.0,
+            "heading": 0.0
+        },
+        {
+            "lat": -6.1750,
+            "lng": 106.8300,
+            "timestamp": 1691427610000,
+            "speed": 15.5,
+            "altitude": 128.5,
+            "accuracy": 4.8,
+            "heading": 180.0
+        },
+        {
+            "lat": -7.2575,
+            "lng": 112.7521,
+            "timestamp": 1691452800000,
+            "speed": 0.0,
+            "altitude": 95.0,
+            "accuracy": 6.2,
+            "heading": 0.0
+        }
+    ]
 }
 ```
 
@@ -261,6 +295,9 @@ class LiveTrackingService {
   Map<String, double>? _maxElevationLocation;
   Map<String, double>? _lastPosition;
   
+  // Complete GPS path storage
+  List<Map<String, dynamic>> _gpsPath = [];
+  
   // Set token from login
   void setBearerToken(String token) {
     _bearerToken = token;
@@ -283,6 +320,7 @@ class LiveTrackingService {
     _maxSpeedLocation = null;
     _maxElevationLocation = null;
     _lastPosition = {'lat': initialLat, 'lng': initialLng};
+    _gpsPath = [];
     
     final response = await http.post(
       Uri.parse('$baseUrl/api/mobile/live-tracking/start'),
@@ -316,8 +354,8 @@ class LiveTrackingService {
   }) async {
     if (_sessionId == null) return;
     
-    // Calculate trip statistics
-    _updateTripStatistics(lat, lng, speed, altitude);
+    // Calculate trip statistics and store GPS point
+    _updateTripStatistics(lat, lng, speed, altitude, accuracy, heading);
     
     await http.post(
       Uri.parse('$baseUrl/api/mobile/live-tracking/update'),
@@ -339,7 +377,21 @@ class LiveTrackingService {
   }
   
   // Update trip statistics with each GPS point
-  void _updateTripStatistics(double lat, double lng, double? speed, double? altitude) {
+  void _updateTripStatistics(double lat, double lng, double? speed, double? altitude, double? accuracy, double? heading) {
+    // Add GPS point to path
+    Map<String, dynamic> gpsPoint = {
+      'lat': lat,
+      'lng': lng,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    
+    if (speed != null) gpsPoint['speed'] = speed;
+    if (altitude != null) gpsPoint['altitude'] = altitude;
+    if (accuracy != null) gpsPoint['accuracy'] = accuracy;
+    if (heading != null) gpsPoint['heading'] = heading;
+    
+    _gpsPath.add(gpsPoint);
+    
     // Calculate distance increment
     if (_lastPosition != null) {
       double distance = _calculateDistance(
@@ -423,8 +475,15 @@ class LiveTrackingService {
     return summary;
   }
   
-  // Stop tracking with mobile-calculated statistics
-  Future<Map<String, dynamic>?> stopTracking({bool saveTrip = false}) async {
+  // Stop tracking with mobile-calculated statistics and GPS path
+  Future<Map<String, dynamic>?> stopTracking({
+    bool saveTrip = false,
+    String? trainRelation,
+    int? fromStationId,
+    String? fromStationName,
+    int? toStationId,
+    String? toStationName,
+  }) async {
     if (_sessionId == null) return null;
     
     Map<String, dynamic> requestBody = {
@@ -432,9 +491,17 @@ class LiveTrackingService {
       'save_trip': saveTrip,
     };
     
-    // Include mobile-calculated statistics if saving trip
+    // Include mobile-calculated statistics and GPS path if saving trip
     if (saveTrip) {
       requestBody['trip_summary'] = _getTripSummary();
+      requestBody['gps_path'] = _gpsPath;
+      
+      // Add station information if provided
+      if (trainRelation != null) requestBody['train_relation'] = trainRelation;
+      if (fromStationId != null) requestBody['from_station_id'] = fromStationId;
+      if (fromStationName != null) requestBody['from_station_name'] = fromStationName;
+      if (toStationId != null) requestBody['to_station_id'] = toStationId;
+      if (toStationName != null) requestBody['to_station_name'] = toStationName;
     }
     
     final response = await http.post(
@@ -450,6 +517,7 @@ class LiveTrackingService {
     if (response.statusCode == 200) {
       final data = json.decode(response.body);
       _sessionId = null; // Clear session
+      _gpsPath = []; // Clear GPS path
       return data;
     }
     return null;
@@ -481,8 +549,38 @@ class LiveTrackingService {
       'duration_minutes': _startTime != null 
           ? DateTime.now().difference(_startTime!).inMinutes 
           : 0,
+      'gps_points': _gpsPath.length,
     };
   }
+  
+  // Usage Example:
+  /*
+  // Start tracking
+  await liveTracking.startTracking(
+    trainId: 501,
+    trainNumber: 'KA501',
+    initialLat: -6.1744,
+    initialLng: 106.8294,
+  );
+  
+  // Update location during trip
+  await liveTracking.updateLocation(-6.1750, 106.8300,
+    speed: 15.5, altitude: 128.5, accuracy: 4.8, heading: 180.0);
+  
+  // Stop and save trip with station info
+  final result = await liveTracking.stopTracking(
+    saveTrip: true,
+    trainRelation: 'Jakarta-Surabaya',
+    fromStationId: 1,
+    fromStationName: 'Jakarta Gambir',
+    toStationId: 15,
+    toStationName: 'Surabaya Gubeng',
+  );
+  
+  if (result != null && result['trip_saved'] == true) {
+    print('Trip saved with ID: ${result['trip_id']}');
+  }
+  */
 }
 ```
 

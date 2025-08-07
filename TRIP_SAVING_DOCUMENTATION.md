@@ -22,7 +22,7 @@ Content-Type: application/json
 }
 ```
 
-#### **Stop with Mobile-Calculated Trip Statistics** ⭐ **PREFERRED**
+#### **Stop with Complete Mobile Data** ⭐ **PREFERRED**
 ```http
 POST /api/mobile/live-tracking/stop
 Authorization: Bearer {token}
@@ -31,11 +31,16 @@ Content-Type: application/json
 {
   "session_id": "550e8400-e29b-41d4-a716-446655440000",
   "save_trip": true,
+  "train_relation": "Jakarta-Surabaya",
+  "from_station_id": 1,
+  "from_station_name": "Jakarta Gambir",
+  "to_station_id": 15,
+  "to_station_name": "Surabaya Gubeng",
   "trip_summary": {
-    "total_distance_km": 125.8,
+    "total_distance_km": 692.5,
     "max_speed_kmh": 82.5,
-    "avg_speed_kmh": 45.2,
-    "duration_seconds": 10800,
+    "avg_speed_kmh": 65.2,
+    "duration_seconds": 25200,
     "max_elevation_m": 245,
     "min_elevation_m": 95,
     "elevation_gain_m": 150,
@@ -47,7 +52,36 @@ Content-Type: application/json
       "lat": -6.3123,
       "lng": 106.9234
     }
-  }
+  },
+  "gps_path": [
+    {
+      "lat": -6.1744,
+      "lng": 106.8294,
+      "timestamp": 1691427600000,
+      "speed": 0.0,
+      "altitude": 125.0,
+      "accuracy": 5.0,
+      "heading": 0.0
+    },
+    {
+      "lat": -6.1750,
+      "lng": 106.8300,
+      "timestamp": 1691427610000,
+      "speed": 15.5,
+      "altitude": 128.5,
+      "accuracy": 4.8,
+      "heading": 180.0
+    },
+    {
+      "lat": -7.2575,
+      "lng": 112.7521,
+      "timestamp": 1691452800000,
+      "speed": 0.0,
+      "altitude": 95.0,
+      "accuracy": 6.2,
+      "heading": 0.0
+    }
+  ]
 }
 ```
 

@@ -391,9 +391,15 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	}
 
 	var req struct {
-		SessionID   string       `json:"session_id" binding:"required"`
-		SaveTrip    *bool        `json:"save_trip,omitempty"`
-		TripSummary *TripSummary `json:"trip_summary,omitempty"`
+		SessionID       string         `json:"session_id" binding:"required"`
+		SaveTrip        *bool          `json:"save_trip,omitempty"`
+		TripSummary     *TripSummary   `json:"trip_summary,omitempty"`
+		GPSPath         []GPSPoint     `json:"gps_path,omitempty"`
+		TrainRelation   *string        `json:"train_relation,omitempty"`
+		FromStationID   *uint          `json:"from_station_id,omitempty"`
+		FromStationName *string        `json:"from_station_name,omitempty"`
+		ToStationID     *uint          `json:"to_station_id,omitempty"`
+		ToStationName   *string        `json:"to_station_name,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -425,7 +431,14 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	
 	// Save trip data if requested
 	if req.SaveTrip != nil && *req.SaveTrip {
-		tripID = h.saveUserTrip(session, user.ID, req.TripSummary)
+		stationInfo := StationInfo{
+			TrainRelation:   req.TrainRelation,
+			FromStationID:   req.FromStationID,
+			FromStationName: req.FromStationName,
+			ToStationID:     req.ToStationID,
+			ToStationName:   req.ToStationName,
+		}
+		tripID = h.saveUserTrip(session, user.ID, req.TripSummary, req.GPSPath, &stationInfo)
 		tripSaved = (tripID != nil)
 		if tripSaved {
 			fmt.Printf("DEBUG: Saved trip with ID %d for user %d\n", *tripID, user.ID)
@@ -646,45 +659,80 @@ func (h *SimpleLiveTrackingHandler) recalculateAveragePosition(trainData *models
 	}
 }
 
-// Save user trip data to trips table using mobile-calculated statistics
-func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSession, userID uint, mobileSummary *TripSummary) *uint {
-	// Get tracking data from S3 file for JSON storage
-	trainData, err := h.s3.GetTrainData(session.FilePath)
-	if err != nil {
-		fmt.Printf("ERROR: Could not read train data for trip saving: %v\n", err)
-		return nil
-	}
-
-	// Find user's tracking data for JSON storage
-	var userTrackingData []models.Passenger
-	for _, passenger := range trainData.Passengers {
-		if passenger.UserID == userID {
-			userTrackingData = append(userTrackingData, passenger)
+// Save user trip data to trips table using mobile GPS path and statistics
+func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSession, userID uint, mobileSummary *TripSummary, gpsPath []GPSPoint, stationInfo *StationInfo) *uint {
+	
+	// Use mobile GPS path if provided, otherwise fallback to S3 data
+	var trackingDataInterface interface{}
+	var routeCoordsInterface interface{}
+	var startLat, startLng, endLat, endLng float64
+	
+	if len(gpsPath) > 0 {
+		fmt.Printf("DEBUG: Using mobile GPS path with %d points\n", len(gpsPath))
+		
+		// Use mobile GPS path for complete journey data
+		trackingDataInterface = gpsPath
+		
+		// Extract route coordinates for map display
+		var routeCoords []map[string]interface{}
+		for _, point := range gpsPath {
+			routeCoords = append(routeCoords, map[string]interface{}{
+				"lat":       point.Lat,
+				"lng":       point.Lng,
+				"timestamp": point.Timestamp,
+			})
 		}
-	}
+		routeCoordsInterface = routeCoords
+		
+		// Get start/end points from GPS path
+		startLat = gpsPath[0].Lat
+		startLng = gpsPath[0].Lng
+		endLat = gpsPath[len(gpsPath)-1].Lat
+		endLng = gpsPath[len(gpsPath)-1].Lng
+		
+	} else {
+		fmt.Printf("DEBUG: Falling back to S3 data for GPS path\n")
+		
+		// Fallback: Get tracking data from S3 file (legacy approach)
+		trainData, err := h.s3.GetTrainData(session.FilePath)
+		if err != nil {
+			fmt.Printf("ERROR: Could not read train data for trip saving: %v\n", err)
+			return nil
+		}
 
-	if len(userTrackingData) == 0 {
-		fmt.Printf("ERROR: No tracking data found for user %d\n", userID)
-		return nil
-	}
+		// Find user's tracking data from S3
+		var userTrackingData []models.Passenger
+		for _, passenger := range trainData.Passengers {
+			if passenger.UserID == userID {
+				userTrackingData = append(userTrackingData, passenger)
+			}
+		}
 
-	// Get start/end points from tracking data
-	startPoint := userTrackingData[0]
-	endPoint := userTrackingData[len(userTrackingData)-1]
-	
-	// Prepare data as proper interfaces for JSON fields
-	var trackingDataInterface interface{} = userTrackingData
-	
-	// Extract route coordinates for map display
-	var routeCoords []map[string]interface{}
-	for _, point := range userTrackingData {
-		routeCoords = append(routeCoords, map[string]interface{}{
-			"lat":       point.Lat,
-			"lng":       point.Lng,
-			"timestamp": point.Timestamp,
-		})
+		if len(userTrackingData) == 0 {
+			fmt.Printf("ERROR: No tracking data found for user %d\n", userID)
+			return nil
+		}
+
+		// Use S3 data for tracking
+		trackingDataInterface = userTrackingData
+		
+		// Extract route coordinates from S3 data
+		var routeCoords []map[string]interface{}
+		for _, point := range userTrackingData {
+			routeCoords = append(routeCoords, map[string]interface{}{
+				"lat":       point.Lat,
+				"lng":       point.Lng,
+				"timestamp": point.Timestamp,
+			})
+		}
+		routeCoordsInterface = routeCoords
+		
+		// Get start/end points from S3 data
+		startLat = userTrackingData[0].Lat
+		startLng = userTrackingData[0].Lng
+		endLat = userTrackingData[len(userTrackingData)-1].Lat
+		endLng = userTrackingData[len(userTrackingData)-1].Lng
 	}
-	var routeCoordsInterface interface{} = routeCoords
 
 	// Use mobile-calculated stats if provided, otherwise fallback to server calculation
 	var stats TripStatistics
@@ -718,9 +766,16 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		}
 	} else {
 		fmt.Printf("DEBUG: Falling back to server-calculated trip statistics\n")
-		// Fallback to server calculation
-		durationSeconds = int((endPoint.Timestamp - startPoint.Timestamp) / 1000)
-		stats = h.calculateTripStatistics(userTrackingData)
+		// Fallback: Calculate basic stats from available data
+		if len(gpsPath) > 1 {
+			// Calculate from mobile GPS path
+			durationSeconds = int((gpsPath[len(gpsPath)-1].Timestamp - gpsPath[0].Timestamp) / 1000)
+			stats = h.calculateTripStatisticsFromGPS(gpsPath)
+		} else {
+			// Calculate from S3 data (legacy fallback)
+			durationSeconds = int(time.Now().Sub(session.StartedAt).Seconds())
+			// Basic stats only since S3 has limited data
+		}
 	}
 
 	// Create trip record
@@ -732,6 +787,13 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		TrainName:        session.TrainNumber,
 		TrainNumber:      session.TrainNumber,
 		
+		// Station information from mobile request
+		TrainRelation:    stationInfo.TrainRelation,
+		FromStationID:    stationInfo.FromStationID,
+		FromStationName:  stationInfo.FromStationName,
+		ToStationID:      stationInfo.ToStationID,
+		ToStationName:    stationInfo.ToStationName,
+		
 		// Statistical data (mobile-calculated preferred)
 		TotalDistanceKm:  stats.TotalDistanceKm,
 		MaxSpeedKmh:      stats.MaxSpeedKmh,
@@ -742,16 +804,16 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		DurationSeconds:  durationSeconds,
 		
 		// Position data
-		StartLatitude:    startPoint.Lat,
-		StartLongitude:   startPoint.Lng,
-		EndLatitude:      endPoint.Lat,
-		EndLongitude:     endPoint.Lng,
+		StartLatitude:    startLat,
+		StartLongitude:   startLng,
+		EndLatitude:      endLat,
+		EndLongitude:     endLng,
 		MaxSpeedLat:      stats.MaxSpeedLat,
 		MaxSpeedLng:      stats.MaxSpeedLng,
 		MaxElevationLat:  stats.MaxElevationLat,
 		MaxElevationLng:  stats.MaxElevationLng,
 		
-		// JSON data (complete tracking history)
+		// JSON data (complete tracking history from mobile or S3)
 		TrackingData:     trackingDataInterface,
 		RouteCoordinates: routeCoordsInterface,
 		
@@ -766,12 +828,18 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		return nil
 	}
 
-	if mobileSummary != nil {
-		fmt.Printf("DEBUG: Saved trip ID %d with mobile stats - %.2fkm, %.1fkm/h max, %ds duration\n", 
-			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds)
+	// Log station information
+	stationLog := "no stations"
+	if stationInfo.FromStationName != nil && stationInfo.ToStationName != nil {
+		stationLog = fmt.Sprintf("%s → %s", *stationInfo.FromStationName, *stationInfo.ToStationName)
+	}
+	
+	if len(gpsPath) > 0 {
+		fmt.Printf("DEBUG: Saved trip ID %d with mobile GPS path (%d points) - %.2fkm, %.1fkm/h max, %ds duration, %s\n", 
+			trip.ID, len(gpsPath), stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds, stationLog)
 	} else {
-		fmt.Printf("DEBUG: Saved trip ID %d with server stats - %.2fkm, %.1fkm/h max, %ds duration\n", 
-			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds)
+		fmt.Printf("DEBUG: Saved trip ID %d with S3 fallback data - %.2fkm, %.1fkm/h max, %ds duration, %s\n", 
+			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds, stationLog)
 	}
 	
 	return &trip.ID
@@ -809,6 +877,26 @@ type LocationPoint struct {
 	Lng float64 `json:"lng"`
 }
 
+// Mobile GPS point for complete journey path
+type GPSPoint struct {
+	Lat       float64  `json:"lat"`
+	Lng       float64  `json:"lng"`
+	Timestamp int64    `json:"timestamp"`
+	Speed     *float64 `json:"speed,omitempty"`
+	Altitude  *float64 `json:"altitude,omitempty"`
+	Accuracy  *float64 `json:"accuracy,omitempty"`
+	Heading   *float64 `json:"heading,omitempty"`
+}
+
+// Station information for trip
+type StationInfo struct {
+	TrainRelation   *string `json:"train_relation,omitempty"`
+	FromStationID   *uint   `json:"from_station_id,omitempty"`
+	FromStationName *string `json:"from_station_name,omitempty"`
+	ToStationID     *uint   `json:"to_station_id,omitempty"`
+	ToStationName   *string `json:"to_station_name,omitempty"`
+}
+
 // Calculate advanced trip statistics from GPS tracking data
 func (h *SimpleLiveTrackingHandler) calculateTripStatistics(trackingData []models.Passenger) TripStatistics {
 	stats := TripStatistics{}
@@ -829,6 +917,77 @@ func (h *SimpleLiveTrackingHandler) calculateTripStatistics(trackingData []model
 		// Calculate distance between consecutive points
 		if i > 0 {
 			prevPoint := trackingData[i-1]
+			distance := calculateDistance(prevPoint.Lat, prevPoint.Lng, point.Lat, point.Lng)
+			totalDistance += distance
+		}
+		
+		// Speed analysis
+		if point.Speed != nil && *point.Speed > 0 {
+			speed := *point.Speed
+			totalSpeed += speed
+			speedCount++
+			
+			if speed > maxSpeed {
+				maxSpeed = speed
+				stats.MaxSpeedLat = &point.Lat
+				stats.MaxSpeedLng = &point.Lng
+			}
+		}
+		
+		// Elevation analysis (if available)
+		if point.Altitude != nil {
+			altitude := *point.Altitude
+			if altitude > maxElevation {
+				maxElevation = altitude
+				stats.MaxElevationLat = &point.Lat
+				stats.MaxElevationLng = &point.Lng
+			}
+			if altitude < minElevation {
+				minElevation = altitude
+			}
+		}
+	}
+	
+	// Finalize statistics
+	stats.TotalDistanceKm = totalDistance
+	stats.MaxSpeedKmh = maxSpeed * 3.6 // Convert m/s to km/h
+	if speedCount > 0 {
+		stats.AvgSpeedKmh = (totalSpeed / float64(speedCount)) * 3.6
+	}
+	
+	if maxElevation > -1000 {
+		stats.MaxElevationM = int(maxElevation)
+	}
+	if minElevation < 10000 {
+		stats.MinElevationM = int(minElevation)
+	}
+	if maxElevation > -1000 && minElevation < 10000 {
+		stats.ElevationGainM = int(maxElevation - minElevation)
+	}
+	
+	return stats
+}
+
+// Calculate trip statistics from mobile GPS points
+func (h *SimpleLiveTrackingHandler) calculateTripStatisticsFromGPS(gpsPath []GPSPoint) TripStatistics {
+	stats := TripStatistics{}
+	
+	if len(gpsPath) < 2 {
+		return stats // Not enough data
+	}
+	
+	var totalDistance float64 = 0
+	var totalSpeed float64 = 0
+	var speedCount int = 0
+	var maxSpeed float64 = 0
+	var maxElevation float64 = -1000
+	var minElevation float64 = 10000
+	
+	// Process each GPS point
+	for i, point := range gpsPath {
+		// Calculate distance between consecutive points
+		if i > 0 {
+			prevPoint := gpsPath[i-1]
 			distance := calculateDistance(prevPoint.Lat, prevPoint.Lng, point.Lat, point.Lng)
 			totalDistance += distance
 		}
