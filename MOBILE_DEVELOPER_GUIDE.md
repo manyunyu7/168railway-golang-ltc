@@ -183,21 +183,44 @@ Recover session after app restart or connection loss.
 
 Stop live tracking and optionally save trip.
 
-**Request:**
+#### **Basic Stop (No Trip Saving)**
+```json
+{
+    "session_id": "uuid-session-id",
+    "save_trip": false
+}
+```
+
+#### **Stop with Mobile-Calculated Statistics** ⭐ **RECOMMENDED**
 ```json
 {
     "session_id": "uuid-session-id",
     "save_trip": true,
-    "from_station_id": 1,
-    "from_station_name": "Jakarta Kota",
-    "to_station_id": 15,
-    "to_station_name": "Bogor",
-    "end_lat": -6.595038,
-    "end_lng": 106.816635,
-    "total_distance_km": 54.8,
-    "max_speed_kmh": 80.5,
-    "avg_speed_kmh": 45.2,
-    "duration_seconds": 4350
+    "trip_summary": {
+        "total_distance_km": 54.8,
+        "max_speed_kmh": 80.5,
+        "avg_speed_kmh": 45.2,
+        "duration_seconds": 4350,
+        "max_elevation_m": 245,
+        "min_elevation_m": 95,
+        "elevation_gain_m": 150,
+        "max_speed_location": {
+            "lat": -6.2085,
+            "lng": 106.8456
+        },
+        "max_elevation_location": {
+            "lat": -6.3123,
+            "lng": 106.9234
+        }
+    }
+}
+```
+
+#### **Fallback: Server Calculation**
+```json
+{
+    "session_id": "uuid-session-id",
+    "save_trip": true
 }
 ```
 
@@ -205,31 +228,62 @@ Stop live tracking and optionally save trip.
 ```json
 {
     "success": true,
-    "message": "Mobile tracking session stopped successfully (Redis-free)",
-    "trip_saved": false
+    "message": "Mobile tracking session stopped successfully",
+    "trip_saved": true,
+    "trip_id": 1234
 }
 ```
+
+**Important Notes:**
+- **Mobile statistics preferred**: More accurate with high-frequency GPS data
+- **Server fallback**: Works for older clients without trip calculation
+- **Complete GPS history**: Saved to `tracking_data` and `route_coordinates` JSON fields
+- **Trip ID returned**: Use for referencing saved trip records
 
 ## 📱 Flutter Implementation Example
 
 ```dart
+import 'dart:math' as math;
+
 class LiveTrackingService {
   static const String baseUrl = 'http://localhost:8081';
   String? _bearerToken;
   String? _sessionId;
+  
+  // Trip statistics tracking
+  DateTime? _startTime;
+  double _totalDistance = 0.0;
+  double _maxSpeed = 0.0;
+  List<double> _speeds = [];
+  double? _maxElevation;
+  double? _minElevation;
+  Map<String, double>? _maxSpeedLocation;
+  Map<String, double>? _maxElevationLocation;
+  Map<String, double>? _lastPosition;
   
   // Set token from login
   void setBearerToken(String token) {
     _bearerToken = token;
   }
   
-  // Start tracking
+  // Start tracking with trip calculation initialization
   Future<bool> startTracking({
     required int trainId,
     required String trainNumber,
     required double initialLat,
     required double initialLng,
   }) async {
+    // Initialize trip tracking
+    _startTime = DateTime.now();
+    _totalDistance = 0.0;
+    _maxSpeed = 0.0;
+    _speeds = [];
+    _maxElevation = null;
+    _minElevation = null;
+    _maxSpeedLocation = null;
+    _maxElevationLocation = null;
+    _lastPosition = {'lat': initialLat, 'lng': initialLng};
+    
     final response = await http.post(
       Uri.parse('$baseUrl/api/mobile/live-tracking/start'),
       headers: {
@@ -253,9 +307,17 @@ class LiveTrackingService {
     return false;
   }
   
-  // Update location
-  Future<void> updateLocation(double lat, double lng) async {
+  // Update location with real-time trip statistics calculation
+  Future<void> updateLocation(double lat, double lng, {
+    double? speed,
+    double? altitude,
+    double? accuracy,
+    double? heading,
+  }) async {
     if (_sessionId == null) return;
+    
+    // Calculate trip statistics
+    _updateTripStatistics(lat, lng, speed, altitude);
     
     await http.post(
       Uri.parse('$baseUrl/api/mobile/live-tracking/update'),
@@ -268,12 +330,129 @@ class LiveTrackingService {
         'session_id': _sessionId,
         'latitude': lat,
         'longitude': lng,
-        'accuracy': 5.0,
-        'speed': 0.0,
-        'heading': 0.0,
-        'altitude': 0.0,
+        'accuracy': accuracy ?? 5.0,
+        'speed': speed ?? 0.0,
+        'heading': heading ?? 0.0,
+        'altitude': altitude ?? 0.0,
       }),
     );
+  }
+  
+  // Update trip statistics with each GPS point
+  void _updateTripStatistics(double lat, double lng, double? speed, double? altitude) {
+    // Calculate distance increment
+    if (_lastPosition != null) {
+      double distance = _calculateDistance(
+        _lastPosition!['lat']!, _lastPosition!['lng']!,
+        lat, lng,
+      );
+      _totalDistance += distance;
+    }
+    
+    // Track speed statistics
+    if (speed != null && speed > 0) {
+      double speedKmh = speed * 3.6; // m/s to km/h
+      _speeds.add(speedKmh);
+      
+      if (speedKmh > _maxSpeed) {
+        _maxSpeed = speedKmh;
+        _maxSpeedLocation = {'lat': lat, 'lng': lng};
+      }
+    }
+    
+    // Track elevation statistics
+    if (altitude != null) {
+      if (_maxElevation == null || altitude > _maxElevation!) {
+        _maxElevation = altitude;
+        _maxElevationLocation = {'lat': lat, 'lng': lng};
+      }
+      if (_minElevation == null || altitude < _minElevation!) {
+        _minElevation = altitude;
+      }
+    }
+    
+    _lastPosition = {'lat': lat, 'lng': lng};
+  }
+  
+  // Haversine distance calculation
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    const double R = 6371; // Earth's radius in kilometers
+    double dLat = (lat2 - lat1) * (math.pi / 180);
+    double dLon = (lon2 - lon1) * (math.pi / 180);
+    double a = math.sin(dLat / 2) * math.sin(dLat / 2) +
+        math.cos(lat1 * (math.pi / 180)) * math.cos(lat2 * (math.pi / 180)) *
+        math.sin(dLon / 2) * math.sin(dLon / 2);
+    double c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return R * c;
+  }
+  
+  // Generate trip summary from accumulated statistics
+  Map<String, dynamic> _getTripSummary() {
+    if (_startTime == null) return {};
+    
+    int durationSeconds = DateTime.now().difference(_startTime!).inSeconds;
+    double avgSpeed = _speeds.isNotEmpty ? 
+        _speeds.reduce((a, b) => a + b) / _speeds.length : 0.0;
+    
+    Map<String, dynamic> summary = {
+      'total_distance_km': _totalDistance,
+      'max_speed_kmh': _maxSpeed,
+      'avg_speed_kmh': avgSpeed,
+      'duration_seconds': durationSeconds,
+    };
+    
+    // Optional elevation data
+    if (_maxElevation != null) {
+      summary['max_elevation_m'] = _maxElevation!.round();
+    }
+    if (_minElevation != null) {
+      summary['min_elevation_m'] = _minElevation!.round();
+    }
+    if (_maxElevation != null && _minElevation != null) {
+      summary['elevation_gain_m'] = (_maxElevation! - _minElevation!).round();
+    }
+    
+    // Optional location data
+    if (_maxSpeedLocation != null) {
+      summary['max_speed_location'] = _maxSpeedLocation;
+    }
+    if (_maxElevationLocation != null) {
+      summary['max_elevation_location'] = _maxElevationLocation;
+    }
+    
+    return summary;
+  }
+  
+  // Stop tracking with mobile-calculated statistics
+  Future<Map<String, dynamic>?> stopTracking({bool saveTrip = false}) async {
+    if (_sessionId == null) return null;
+    
+    Map<String, dynamic> requestBody = {
+      'session_id': _sessionId,
+      'save_trip': saveTrip,
+    };
+    
+    // Include mobile-calculated statistics if saving trip
+    if (saveTrip) {
+      requestBody['trip_summary'] = _getTripSummary();
+    }
+    
+    final response = await http.post(
+      Uri.parse('$baseUrl/api/mobile/live-tracking/stop'),
+      headers: {
+        'Authorization': 'Bearer $_bearerToken',
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: json.encode(requestBody),
+    );
+    
+    if (response.statusCode == 200) {
+      final data = json.decode(response.body);
+      _sessionId = null; // Clear session
+      return data;
+    }
+    return null;
   }
   
   // Send heartbeat
@@ -292,6 +471,17 @@ class LiveTrackingService {
         'app_state': 'foreground',
       }),
     );
+  }
+  
+  // Get current trip progress (for UI display)
+  Map<String, dynamic> getCurrentTripStats() {
+    return {
+      'distance_km': _totalDistance.toStringAsFixed(1),
+      'max_speed_kmh': _maxSpeed.toStringAsFixed(1),
+      'duration_minutes': _startTime != null 
+          ? DateTime.now().difference(_startTime!).inMinutes 
+          : 0,
+    };
   }
 }
 ```
