@@ -92,6 +92,23 @@ func main() {
 		api.GET("/active-train-list", liveTrackingHandler.GetActiveTrainsList)
 		api.GET("/train/:trainNumber", liveTrackingHandler.GetTrainData)
 		
+		// WebSocket upgrade information endpoint
+		api.GET("/websocket-info", func(c *gin.Context) {
+			c.JSON(200, gin.H{
+				"websocket_available": true,
+				"websocket_url": "wss://go-ltc.trainradar35.com/ws/trains",
+				"upgrade_benefits": []string{
+					"Real-time updates every 5 seconds",
+					"Individual passenger positions", 
+					"Lower bandwidth usage",
+					"Instant train status changes",
+					"No polling required",
+				},
+				"http_endpoints_still_available": true,
+				"migration_guide": "Connect to WebSocket for real-time data, keep HTTP as fallback",
+			})
+		})
+		
 		mobile := api.Group("/mobile")
 		{
 			// Protected live tracking routes

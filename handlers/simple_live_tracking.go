@@ -57,6 +57,20 @@ func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
 	c.Header("Pragma", "no-cache")
 	c.Header("Expires", "0")
 	
+	// Notify clients about WebSocket availability
+	c.Header("X-WebSocket-Available", "wss://go-ltc.trainradar35.com/ws/trains")
+	c.Header("X-API-Version", "v2.0-websocket")
+	
+	// Add WebSocket upgrade information to response
+	if trainsListData != nil {
+		trainsListData["websocket_upgrade"] = map[string]interface{}{
+			"available": true,
+			"url": "wss://go-ltc.trainradar35.com/ws/trains",
+			"benefits": "Real-time updates, lower bandwidth, individual passenger positions",
+			"message_types": []string{"initial_data", "train_updates", "ping/pong"},
+		}
+	}
+	
 	fmt.Printf("DEBUG: Serving trains list with %v trains\n", trainsListData["total"])
 	c.JSON(http.StatusOK, trainsListData)
 }
