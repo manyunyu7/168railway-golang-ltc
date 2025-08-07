@@ -432,8 +432,10 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		UpdatedAt: time.Now(),
 	})
 
-	// Update trains list
+	// Update trains list immediately after stopping session
 	h.updateTrainsList()
+	
+	fmt.Printf("DEBUG: User %d stopped session %s, trains list updated\n", user.ID, req.SessionID)
 
 	response := gin.H{
 		"success":    true,

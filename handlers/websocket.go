@@ -180,46 +180,88 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 	}
 	h.mutex.RUnlock()
 
-	// Get current trains list
-	trainsListData, err := h.s3.GetJSONData("trains/trains-list.json")
-	if err != nil {
-		return // No trains data available
-	}
-
-	trains, ok := trainsListData["trains"].([]interface{})
-	if !ok {
+	// Get active sessions directly from database (single source of truth)
+	var sessions []models.LiveTrackingSession
+	result := h.db.Where("status = ?", "active").Find(&sessions)
+	if result.Error != nil {
+		log.Printf("WebSocket: Failed to get active sessions: %v", result.Error)
 		return
 	}
 
-	// Prepare train updates
+	if len(sessions) == 0 {
+		// No active sessions - send empty update
+		message := WebSocketMessage{
+			Type: "train_updates",
+			Data: []TrainUpdate{},
+		}
+		h.broadcastToClients(message)
+		return
+	}
+
+	// Group sessions by train number
+	trainSessions := make(map[string][]models.LiveTrackingSession)
+	for _, session := range sessions {
+		trainSessions[session.TrainNumber] = append(trainSessions[session.TrainNumber], session)
+	}
+
+	// Prepare train updates from database sessions
 	var updates []TrainUpdate
-	for _, train := range trains {
-		trainMap, ok := train.(map[string]interface{})
-		if !ok {
+	for trainNumber, trainSessionList := range trainSessions {
+		// Get detailed train data from S3
+		fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+		trainData, err := h.s3.GetTrainData(fileName)
+		if err != nil {
+			// If S3 file doesn't exist but we have active sessions, create basic update from database
+			log.Printf("WebSocket: S3 file missing for train %s, creating from database", trainNumber)
+			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList)
+			if update != nil {
+				updates = append(updates, *update)
+			}
 			continue
 		}
 
-		trainId, _ := trainMap["trainId"].(string)
-		passengerCount, _ := trainMap["passengerCount"].(float64)
-		lastUpdate, _ := trainMap["lastUpdate"].(string)
-		status, _ := trainMap["status"].(string)
+		// Filter passengers to only include those with active database sessions
+		var activePassengers []models.Passenger
+		for _, session := range trainSessionList {
+			// Find passenger data for this session
+			for _, passenger := range trainData.Passengers {
+				if passenger.UserID == session.UserID {
+					// Update passenger status from session heartbeat
+					timeSinceHeartbeat := time.Now().Sub(session.LastHeartbeat)
+					if timeSinceHeartbeat <= 2*time.Minute { // 2 minutes tolerance
+						passenger.Status = "active"
+						activePassengers = append(activePassengers, passenger)
+					}
+					break
+				}
+			}
+		}
 
-		// Get detailed train data for position
-		fileName := fmt.Sprintf("trains/train-%s.json", trainId)
-		trainData, err := h.s3.GetTrainData(fileName)
-		if err != nil {
+		// Skip trains with no active passengers
+		if len(activePassengers) == 0 {
 			continue
+		}
+
+		// Calculate average position from active passengers
+		var totalLat, totalLng float64
+		for _, passenger := range activePassengers {
+			totalLat += passenger.Lat
+			totalLng += passenger.Lng
+		}
+		avgPosition := models.Position{
+			Lat: totalLat / float64(len(activePassengers)),
+			Lng: totalLng / float64(len(activePassengers)),
 		}
 
 		update := TrainUpdate{
-			TrainNumber:     trainId,
-			PassengerCount:  int(passengerCount),
-			AveragePosition: trainData.AveragePosition,
-			Passengers:      trainData.Passengers,
-			LastUpdate:      lastUpdate,
-			Status:          status,
+			TrainNumber:     trainNumber,
+			PassengerCount:  len(activePassengers),
+			AveragePosition: avgPosition,
+			Passengers:      activePassengers,
+			LastUpdate:      time.Now().Format(time.RFC3339),
+			Status:          "active",
 			Route:           trainData.Route,
-			DataSource:      trainData.DataSource,
+			DataSource:      "database-driven-websocket",
 		}
 
 		updates = append(updates, update)
@@ -230,7 +272,15 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 		Type: "train_updates",
 		Data: updates,
 	}
+	h.broadcastToClients(message)
 
+	if len(updates) > 0 {
+		log.Printf("Broadcasted database-driven updates for %d trains to %d clients", len(updates), len(h.clients))
+	}
+}
+
+// Helper method to broadcast messages to all clients
+func (h *WebSocketHandler) broadcastToClients(message WebSocketMessage) {
 	h.mutex.RLock()
 	for conn := range h.clients {
 		if err := conn.WriteJSON(message); err != nil {
@@ -245,8 +295,44 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 		}
 	}
 	h.mutex.RUnlock()
+}
 
-	if len(updates) > 0 {
-		log.Printf("Broadcasted updates for %d trains to %d clients", len(updates), len(h.clients))
+// Helper method to create train update from database sessions when S3 file is missing
+func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, sessions []models.LiveTrackingSession) *TrainUpdate {
+	if len(sessions) == 0 {
+		return nil
+	}
+
+	// Create basic passengers list from sessions (without detailed GPS from S3)
+	var passengers []models.Passenger
+	for _, session := range sessions {
+		// Check if session is recent (within 2 minutes)
+		timeSinceHeartbeat := time.Now().Sub(session.LastHeartbeat)
+		if timeSinceHeartbeat <= 2*time.Minute {
+			passenger := models.Passenger{
+				UserID:     session.UserID,
+				UserType:   "authenticated",
+				ClientType: "mobile", 
+				SessionID:  session.SessionID,
+				Status:     "active",
+				Timestamp:  session.LastHeartbeat.UnixMilli(),
+				// Note: No GPS coordinates available without S3 file
+			}
+			passengers = append(passengers, passenger)
+		}
+	}
+
+	if len(passengers) == 0 {
+		return nil
+	}
+
+	return &TrainUpdate{
+		TrainNumber:    trainNumber,
+		PassengerCount: len(passengers),
+		Passengers:     passengers,
+		LastUpdate:     time.Now().Format(time.RFC3339),
+		Status:         "active",
+		Route:          fmt.Sprintf("Route for train %s", trainNumber),
+		DataSource:     "database-only-fallback",
 	}
 }
