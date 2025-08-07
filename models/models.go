@@ -129,3 +129,25 @@ func (PersonalAccessToken) TableName() string {
 func (Trip) TableName() string {
 	return "trips"
 }
+
+// LiveTrackingSession replaces Redis session tracking
+type LiveTrackingSession struct {
+	ID            uint      `json:"id" gorm:"primaryKey"`
+	SessionID     string    `json:"session_id" gorm:"uniqueIndex"`
+	UserID        uint      `json:"user_id" gorm:"index"`
+	UserType      string    `json:"user_type" gorm:"default:authenticated"`
+	ClientType    string    `json:"client_type" gorm:"default:mobile"`
+	TrainID       uint      `json:"train_id"`
+	TrainNumber   string    `json:"train_number"`
+	FilePath      string    `json:"file_path"`
+	StartedAt     time.Time `json:"started_at"`
+	LastHeartbeat time.Time `json:"last_heartbeat"`
+	AppState      *string   `json:"app_state"`
+	Status        string    `json:"status" gorm:"default:active"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+func (LiveTrackingSession) TableName() string {
+	return "live_tracking_sessions"
+}

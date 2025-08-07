@@ -117,14 +117,12 @@ func (s *S3Client) ListFiles(prefix string) ([]string, error) {
 		return []string{}, nil // Return empty list if prefix doesn't exist
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
 	// For IDCloudHost S3, we need to make individual HEAD requests to check files
 	// This is a simplified approach - scan for common train file patterns
 	var files []string
+	
+	// We don't actually parse the response body for now since it's not implemented
+	// In a full S3 implementation, you'd use AWS SDK's ListObjects
 	
 	// Try to list files by making requests for potential train files
 	// In a real implementation, you'd use AWS SDK's ListObjects

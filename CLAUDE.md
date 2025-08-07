@@ -6,30 +6,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is a high-performance Golang replacement for Laravel live tracking API endpoints, designed to handle real-time GPS location tracking for train passengers. The application integrates with an existing Laravel system's database and validates Laravel Sanctum tokens for authentication.
 
+**Production URL**: https://go-ltc.trainradar35.com/
+
+**Current Implementation Status**: Simplified version without Redis/S3 dependencies for easier deployment. The production version uses database-only implementation with debug logging enabled.
+
 ## Core Architecture
 
 - **Framework**: Gin (HTTP router) with GORM (ORM)
 - **Database**: MySQL (shared with Laravel app)
-- **Cache**: Redis for session management
-- **Storage**: S3-compatible storage (IDCloudHost) for train data files
+- **Cache**: ~~Redis for session management~~ (Currently disabled)
+- **Storage**: ~~S3-compatible storage (IDCloudHost) for train data files~~ (Currently disabled)
 - **Authentication**: Laravel Sanctum token validation (SHA256 hashing)
 
 ### Key Components
 
-- `cmd/main.go` - Application entry point, initializes all services
+- `cmd/main.go` - Application entry point, simplified implementation without Redis/S3
 - `config/config.go` - Environment configuration loading with godotenv
-- `middleware/auth.go` - Laravel Sanctum token authentication
-- `handlers/live_tracking.go` - Main API endpoints for location tracking
+- `middleware/auth.go` - Laravel Sanctum token authentication with debug logging
+- `handlers/live_tracking.go` - Simplified API endpoints (using `NewSimpleLiveTrackingHandler`)
 - `models/models.go` - Database models matching Laravel schema
-- `utils/s3.go` - S3 client for train data file operations
+- `utils/s3.go` - S3 client (currently unused in production)
 
-### Data Flow
+### Data Flow (Current Simplified Implementation)
 
-1. Mobile app sends Bearer token (Laravel Sanctum)
-2. Middleware validates token against `personal_access_tokens` table  
-3. User creates tracking session stored in Redis cache
-4. Location updates stored as JSON files in S3 (`trains/train-{number}.json`)
-5. Session termination saves trip data to `trips` table
+1. Mobile app gets Bearer token from `https://168railway.com/api/mobile/login` (Laravel)
+2. Mobile app calls Golang API with Bearer token
+3. Golang API validates token against shared `personal_access_tokens` table with debug logging
+4. ~~User creates tracking session stored in Redis cache~~ (Currently returns no active sessions)
+5. ~~Location updates stored as JSON files in S3~~ (Currently disabled)
+6. ~~Session termination saves trip data to `trips` table~~ (Simplified responses)
+
+**Important**: The Golang API shares the same MySQL database with the Laravel application but doesn't make HTTP requests to 168railway.com.
 
 ## Common Development Commands
 
@@ -71,30 +78,35 @@ go test -cover ./...
 
 ## Environment Configuration
 
-Copy `.env.example` to `.env` and configure:
+Configure environment variables:
 - Database credentials (must match Laravel app's MySQL)
-- Redis connection details
-- S3 storage configuration
+- ~~Redis connection details~~ (Currently unused)
+- ~~S3 storage configuration~~ (Currently unused)
 - Server port (default 8080)
+
+**Production Environment**: The live server at https://go-ltc.trainradar35.com/ is configured with the necessary database connections.
 
 ## API Integration Details
 
 ### Authentication Flow
-- Uses Laravel's `personal_access_tokens` table
-- SHA256 hashes plain-text tokens from Authorization header
+- Mobile apps obtain Bearer tokens from `https://168railway.com/api/mobile/login`
+- Golang API validates tokens against shared Laravel `personal_access_tokens` table
+- SHA256 hashes only the token part after "|" (Laravel Sanctum format: "id|token_string")
+- Matches both token ID and hashed token in database
 - Updates `last_used_at` timestamp on each request
 - Validates token expiration if `expires_at` is set
+- **Debug logging enabled** in production for troubleshooting
+- **No HTTP calls to Laravel**: Direct database validation only
 
-### Session Management
-- Redis keys: `live_session_{sessionID}` and `user_sessions_{userID}`
-- Session data includes train info, timestamps, S3 file paths
-- 24-hour expiration with heartbeat updates
+### Session Management (Currently Simplified)
+- ~~Redis keys: `live_session_{sessionID}` and `user_sessions_{userID}`~~ (Disabled)
+- ~~Session data includes train info, timestamps, S3 file paths~~ (Simplified)
+- API endpoints return basic responses without full session tracking
 
-### S3 Train Data Structure
-- Files stored as `trains/train-{number}.json`
-- Contains passenger array with GPS coordinates, timestamps
-- Automatic cleanup when no passengers remain
-- Average position calculated from active passengers
+### S3 Train Data Structure (Currently Disabled)
+- ~~Files stored as `trains/train-{number}.json`~~ (Not implemented)
+- ~~Contains passenger array with GPS coordinates, timestamps~~ (Not implemented)
+- ~~Automatic cleanup when no passengers remain~~ (Not implemented)
 
 ## Database Schema Compatibility
 
@@ -105,12 +117,25 @@ Models are designed to match Laravel's database schema:
 
 ## Performance Considerations
 
-- Redis caching for session lookups
-- Efficient S3 operations with proper error handling
+- ~~Redis caching for session lookups~~ (Currently disabled)
+- ~~Efficient S3 operations with proper error handling~~ (Currently disabled)
 - GORM optimizations with proper indexing
 - Gin middleware for CORS and authentication
-- Graceful passenger filtering based on client type timeouts
+- Database auto-migration disabled to avoid key length issues with existing Laravel tables
 
 ## Health Monitoring
 
-Health check endpoint available at `/health` returns service status and configuration summary.
+**Production Health Check**: https://go-ltc.trainradar35.com/health
+- Returns `{"status": "ok", "service": "golang-live-tracking"}`
+- Confirms service is operational and database connectivity
+
+## Production Testing
+
+Test authentication with curl:
+```bash
+curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
+     -H "Content-Type: application/json" \
+     https://go-ltc.trainradar35.com/api/mobile/live-tracking/active-session
+```
+
+**Note**: Debug logging is enabled in production, so server logs will show token validation details for troubleshooting.

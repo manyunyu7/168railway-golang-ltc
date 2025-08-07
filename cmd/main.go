@@ -11,6 +11,7 @@ import (
 	"github.com/modernland/golang-live-tracking/config"
 	"github.com/modernland/golang-live-tracking/handlers"
 	"github.com/modernland/golang-live-tracking/middleware"
+	"github.com/modernland/golang-live-tracking/utils"
 )
 
 func main() {
@@ -32,25 +33,26 @@ func main() {
 	// Skip auto migration to avoid key length issues - use existing Laravel tables
 	// db.AutoMigrate(&models.User{}, &models.PersonalAccessToken{}, &models.Trip{})
 
-	// Skip Redis and S3 for simple implementation
+	// Skip Redis for simple implementation
 	// redisClient := redis.NewClient(&redis.Options{
 	//     Addr:     fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort),
 	//     Password: cfg.RedisPassword,
 	//     DB:       0,
 	// })
 	
-	// s3Client := utils.NewS3Client(
-	//     cfg.S3AccessKey,
-	//     cfg.S3SecretKey,
-	//     cfg.S3Region,
-	//     cfg.S3Bucket,
-	//     cfg.S3Endpoint,
-	// )
+	// Initialize S3 client
+	s3Client := utils.NewS3Client(
+		cfg.S3AccessKey,
+		cfg.S3SecretKey,
+		cfg.S3Region,
+		cfg.S3Bucket,
+		cfg.S3Endpoint,
+	)
 
 	// Initialize handlers and middleware
 	authMiddleware := middleware.NewAuthMiddleware(db)
-	// Use simple Redis-free handler
-	liveTrackingHandler := handlers.NewSimpleLiveTrackingHandler(db)
+	// Use S3-enabled but Redis-free simple handler
+	liveTrackingHandler := handlers.NewSimpleLiveTrackingHandler(db, s3Client)
 
 	// Setup routes
 	r := gin.Default()
@@ -98,7 +100,8 @@ func main() {
 
 	log.Printf("🚀 Golang Live Tracking API server starting on port %s", cfg.Port)
 	log.Printf("📊 Database: %s@%s:%s/%s", cfg.DBUsername, cfg.DBHost, cfg.DBPort, cfg.DBName)
-	log.Printf("⚡ Mode: Redis-free simplified implementation")
+	log.Printf("☁️  S3: %s/%s", cfg.S3Endpoint, cfg.S3Bucket)
+	log.Printf("⚡ Mode: S3-enabled but Redis-free implementation")
 
 	if err := r.Run(":" + cfg.Port); err != nil {
 		log.Fatal("Failed to start server:", err)
