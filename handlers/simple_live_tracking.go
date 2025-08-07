@@ -61,6 +61,35 @@ func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
 	c.JSON(http.StatusOK, trainsListData)
 }
 
+// GetTrainData - Public API endpoint to serve individual train data (proxy for S3)
+func (h *SimpleLiveTrackingHandler) GetTrainData(c *gin.Context) {
+	trainNumber := c.Param("trainNumber")
+	fmt.Printf("DEBUG: Frontend requesting train data for %s via API proxy\n", trainNumber)
+	
+	// Construct S3 key for train file
+	fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+	
+	// Try to read train data from S3
+	trainData, err := h.s3.GetTrainData(fileName)
+	if err != nil {
+		fmt.Printf("DEBUG: Train file %s not found: %v\n", fileName, err)
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Train not found",
+			"trainNumber": trainNumber,
+		})
+		return
+	}
+	
+	// Set proper CORS and cache headers
+	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+	
+	fmt.Printf("DEBUG: Serving train data for %s with %d passengers\n", trainNumber, len(trainData.Passengers))
+	c.JSON(http.StatusOK, trainData)
+}
+
 // GetActiveSession - Check database for active sessions
 func (h *SimpleLiveTrackingHandler) GetActiveSession(c *gin.Context) {
 	user, exists := middleware.GetUserFromContext(c)
