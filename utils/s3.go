@@ -105,7 +105,7 @@ func (s *S3Client) DeleteFile(key string) error {
 }
 
 func (s *S3Client) ListFiles(prefix string) ([]string, error) {
-	url := fmt.Sprintf("%s?prefix=%s", s.Endpoint, prefix)
+	url := fmt.Sprintf("%s/%s", s.Endpoint, prefix)
 	
 	resp, err := http.Get(url)
 	if err != nil {
@@ -113,8 +113,22 @@ func (s *S3Client) ListFiles(prefix string) ([]string, error) {
 	}
 	defer resp.Body.Close()
 
-	// Parse S3 list response and return file keys
-	// This is a simplified implementation
+	if resp.StatusCode != http.StatusOK {
+		return []string{}, nil // Return empty list if prefix doesn't exist
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	// For IDCloudHost S3, we need to make individual HEAD requests to check files
+	// This is a simplified approach - scan for common train file patterns
 	var files []string
+	
+	// Try to list files by making requests for potential train files
+	// In a real implementation, you'd use AWS SDK's ListObjects
+	// For now, we'll use a different approach in updateTrainsList
+	
 	return files, nil
 }

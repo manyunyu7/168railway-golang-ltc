@@ -3,6 +3,7 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -557,8 +558,138 @@ func (h *LiveTrackingHandler) terminateUserSessions(userID uint) {
 }
 
 func (h *LiveTrackingHandler) updateTrainsList() {
-	// Implementation for updating trains list in S3
-	// This would scan all train files and create trains-list.json
+	// Read existing trains-list.json to preserve trains from other systems (Laravel)
+	ctx := context.Background()
+	existingTrains := []map[string]interface{}{}
+	
+	// Try to get existing trains-list.json
+	if existingData, err := h.s3.GetTrainData("trains/trains-list.json"); err == nil {
+		// Parse the existing trains-list.json structure
+		if trainsData, ok := existingData.Passengers.([]interface{}); ok {
+			for _, train := range trainsData {
+				if trainMap, ok := train.(map[string]interface{}); ok {
+					existingTrains = append(existingTrains, trainMap)
+				}
+			}
+		}
+	}
+
+	// Alternative: Read trains-list.json directly as JSON
+	if len(existingTrains) == 0 {
+		if resp, err := http.Get(fmt.Sprintf("%s/trains/trains-list.json", h.s3.Endpoint)); err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				var existingList map[string]interface{}
+				if json.Unmarshal(body, &existingList) == nil {
+					if trains, ok := existingList["trains"].([]interface{}); ok {
+						for _, train := range trains {
+							if trainMap, ok := train.(map[string]interface{}); ok {
+								existingTrains = append(existingTrains, trainMap)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Get current active Golang sessions
+	sessionKeys, err := h.redis.Keys(ctx, "live_session_*").Result()
+	if err != nil {
+		fmt.Printf("Error getting session keys for trains list update: %v\n", err)
+		return
+	}
+
+	// Collect all trains (existing + current Golang sessions)
+	allTrains := []map[string]interface{}{}
+	processedTrains := make(map[string]bool)
+	now := time.Now()
+
+	// First, add trains from current Golang sessions
+	for _, sessionKey := range sessionKeys {
+		sessionData, err := h.redis.HGetAll(ctx, sessionKey).Result()
+		if err != nil || len(sessionData) == 0 {
+			continue
+		}
+
+		fileName := sessionData["file_path"]
+		trainNumber := sessionData["train_number"]
+		
+		// Skip if we already processed this train
+		if processedTrains[trainNumber] {
+			continue
+		}
+
+		// Get train data from S3
+		trainData, err := h.s3.GetTrainData(fileName)
+		if err != nil {
+			continue
+		}
+
+		// Check if data is recent (within last 5 minutes)
+		lastUpdate, err := time.Parse(time.RFC3339, trainData.LastUpdate)
+		if err != nil {
+			continue
+		}
+
+		timeSinceUpdate := now.Sub(lastUpdate)
+		if timeSinceUpdate <= 5*time.Minute && trainData.DataSource == "live-gps" {
+			allTrains = append(allTrains, map[string]interface{}{
+				"trainId":        trainData.TrainID,
+				"passengerCount": trainData.PassengerCount,
+				"lastUpdate":     trainData.LastUpdate,
+				"status":         trainData.Status,
+			})
+			processedTrains[trainNumber] = true
+		}
+	}
+
+	// Then, add existing trains that are still active and not already processed
+	for _, existingTrain := range existingTrains {
+		trainId, ok := existingTrain["trainId"].(string)
+		if !ok {
+			continue
+		}
+
+		// Skip if we already processed this train from our sessions
+		if processedTrains[trainId] {
+			continue
+		}
+
+		// Check if the existing train is still active (within 5 minutes)
+		lastUpdateStr, ok := existingTrain["lastUpdate"].(string)
+		if !ok {
+			continue
+		}
+
+		lastUpdate, err := time.Parse(time.RFC3339, lastUpdateStr)
+		if err != nil {
+			continue
+		}
+
+		timeSinceUpdate := now.Sub(lastUpdate)
+		if timeSinceUpdate <= 5*time.Minute {
+			allTrains = append(allTrains, existingTrain)
+			processedTrains[trainId] = true
+		}
+	}
+
+	// Create trains-list.json content with all trains
+	trainsListData := map[string]interface{}{
+		"trains":      allTrains,
+		"total":       len(allTrains),
+		"lastUpdated": now.Format(time.RFC3339),
+		"source":      "live-tracking-system",
+	}
+
+	// Upload to S3
+	if err := h.s3.UploadJSON("trains/trains-list.json", trainsListData); err != nil {
+		fmt.Printf("Error updating trains-list.json: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Updated trains-list.json with %d trains (preserving existing trains)\n", len(allTrains))
 }
 
 func (h *LiveTrackingHandler) filterActivePassengersAndRecalculate(trainData *models.TrainData) {
