@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Live Train Tracking WebSocket Demo</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .train-item { 
+            border: 1px solid #ccc; 
+            padding: 15px; 
+            margin: 10px 0; 
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+        .passenger { 
+            background-color: #e7f3ff; 
+            padding: 5px; 
+            margin: 5px 0; 
+            border-radius: 3px; 
+        }
+        .status { font-weight: bold; color: green; }
+        .connection-status { 
+            position: fixed; 
+            top: 10px; 
+            right: 10px; 
+            padding: 10px; 
+            border-radius: 5px;
+        }
+        .connected { background-color: #d4edda; color: #155724; }
+        .disconnected { background-color: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>🚂 Live Train Tracking WebSocket Demo</h1>
+    
+    <div id="connectionStatus" class="connection-status disconnected">
+        Disconnected
+    </div>
+    
+    <div>
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+        <button onclick="sendPing()">Send Ping</button>
+    </div>
+    
+    <div id="trains"></div>
+    
+    <h3>WebSocket Messages Log:</h3>
+    <div id="messages" style="background: #f0f0f0; padding: 10px; height: 300px; overflow-y: scroll;"></div>
+
+    <script>
+        let ws = null;
+        
+        function connect() {
+            // Use the production WebSocket endpoint
+            const wsUrl = 'wss://go-ltc.trainradar35.com/ws/trains';
+            // For local testing: ws://localhost:8081/ws/trains
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function(event) {
+                updateConnectionStatus(true);
+                addMessage('Connected to WebSocket server');
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                addMessage('Received: ' + JSON.stringify(message, null, 2));
+                
+                if (message.type === 'initial_data') {
+                    displayTrains(message.data.trains);
+                } else if (message.type === 'train_updates') {
+                    displayTrainUpdates(message.data);
+                } else if (message.type === 'pong') {
+                    addMessage('🏓 Pong received: ' + new Date(message.data.timestamp * 1000));
+                }
+            };
+            
+            ws.onclose = function(event) {
+                updateConnectionStatus(false);
+                addMessage('Connection closed');
+            };
+            
+            ws.onerror = function(error) {
+                addMessage('Error: ' + error);
+            };
+        }
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+        
+        function sendPing() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'ping',
+                    data: {}
+                }));
+                addMessage('🏓 Ping sent');
+            }
+        }
+        
+        function updateConnectionStatus(connected) {
+            const statusDiv = document.getElementById('connectionStatus');
+            if (connected) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'connection-status connected';
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'connection-status disconnected';
+            }
+        }
+        
+        function displayTrains(trains) {
+            const trainsDiv = document.getElementById('trains');
+            trainsDiv.innerHTML = '<h2>🚂 Active Trains (' + trains.length + ')</h2>';
+            
+            trains.forEach(train => {
+                const trainDiv = document.createElement('div');
+                trainDiv.className = 'train-item';
+                trainDiv.innerHTML = `
+                    <h3>Train ${train.trainId}</h3>
+                    <div class="status">Status: ${train.status}</div>
+                    <div>Passengers: ${train.passengerCount}</div>
+                    <div>Last Update: ${train.lastUpdate}</div>
+                `;
+                trainsDiv.appendChild(trainDiv);
+            });
+        }
+        
+        function displayTrainUpdates(trains) {
+            const trainsDiv = document.getElementById('trains');
+            trainsDiv.innerHTML = '<h2>🚂 Active Trains - Real-time Updates (' + trains.length + ')</h2>';
+            
+            trains.forEach(train => {
+                const trainDiv = document.createElement('div');
+                trainDiv.className = 'train-item';
+                
+                let passengersHtml = '';
+                if (train.passengers && train.passengers.length > 0) {
+                    passengersHtml = '<h4>👥 Passengers:</h4>';
+                    train.passengers.forEach(passenger => {
+                        passengersHtml += `
+                            <div class="passenger">
+                                User ID: ${passenger.userID} | 
+                                Position: (${passenger.lat.toFixed(6)}, ${passenger.lng.toFixed(6)}) |
+                                Status: ${passenger.status} |
+                                Type: ${passenger.clientType} |
+                                Updated: ${new Date(passenger.timestamp).toLocaleTimeString()}
+                            </div>
+                        `;
+                    });
+                }
+                
+                trainDiv.innerHTML = `
+                    <h3>🚂 Train ${train.trainNumber}</h3>
+                    <div class="status">Status: ${train.status}</div>
+                    <div><strong>Passengers:</strong> ${train.passengerCount}</div>
+                    <div><strong>Average Position:</strong> (${train.averagePosition.lat.toFixed(6)}, ${train.averagePosition.lng.toFixed(6)})</div>
+                    <div><strong>Route:</strong> ${train.route}</div>
+                    <div><strong>Data Source:</strong> ${train.dataSource}</div>
+                    <div><strong>Last Update:</strong> ${train.lastUpdate}</div>
+                    ${passengersHtml}
+                `;
+                trainsDiv.appendChild(trainDiv);
+            });
+        }
+        
+        function addMessage(message) {
+            const messagesDiv = document.getElementById('messages');
+            const timestamp = new Date().toLocaleTimeString();
+            messagesDiv.innerHTML += `<div>[${timestamp}] ${message}</div>`;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Auto-connect on page load
+        window.onload = function() {
+            connect();
+        };
+    </script>
+</body>
+</html>

@@ -54,6 +54,8 @@ func main() {
 	authMiddleware := middleware.NewAuthMiddleware(db)
 	// Use S3-enabled but Redis-free simple handler
 	liveTrackingHandler := handlers.NewSimpleLiveTrackingHandler(db, s3Client)
+	// Initialize WebSocket handler for real-time updates
+	wsHandler := handlers.NewWebSocketHandler(db, s3Client)
 
 	// Setup routes
 	r := gin.Default()
@@ -79,6 +81,9 @@ func main() {
 			"service": "golang-live-tracking",
 		})
 	})
+
+	// WebSocket endpoint for real-time train updates
+	r.GET("/ws/trains", wsHandler.HandleWebSocket)
 
 	// API routes
 	api := r.Group("/api")
