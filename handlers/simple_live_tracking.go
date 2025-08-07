@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"time"
 
@@ -390,8 +391,9 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	}
 
 	var req struct {
-		SessionID string `json:"session_id" binding:"required"`
-		SaveTrip  *bool  `json:"save_trip,omitempty"`
+		SessionID   string       `json:"session_id" binding:"required"`
+		SaveTrip    *bool        `json:"save_trip,omitempty"`
+		TripSummary *TripSummary `json:"trip_summary,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -419,9 +421,19 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	// Get train file data before removing user
 	fileName := session.FilePath
 	var tripSaved bool = false
+	var tripID *uint = nil
+	
+	// Save trip data if requested
+	if req.SaveTrip != nil && *req.SaveTrip {
+		tripID = h.saveUserTrip(session, user.ID, req.TripSummary)
+		tripSaved = (tripID != nil)
+		if tripSaved {
+			fmt.Printf("DEBUG: Saved trip with ID %d for user %d\n", *tripID, user.ID)
+		}
+	}
 	
 	// Handle train file - remove user or delete entire file
-	err := h.handleStopSessionS3Operations(fileName, user.ID, req.SaveTrip != nil && *req.SaveTrip)
+	err := h.handleStopSessionS3Operations(fileName, user.ID, false) // Don't pass saveTrip here
 	if err != nil {
 		fmt.Printf("ERROR: S3 operations failed: %v\n", err)
 	}
@@ -441,6 +453,10 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		"success":    true,
 		"message":    "Mobile tracking session stopped successfully",
 		"trip_saved": tripSaved,
+	}
+	
+	if tripID != nil {
+		response["trip_id"] = *tripID
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -628,4 +644,256 @@ func (h *SimpleLiveTrackingHandler) recalculateAveragePosition(trainData *models
 		}
 		trainData.PassengerCount = activeCount
 	}
+}
+
+// Save user trip data to trips table using mobile-calculated statistics
+func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSession, userID uint, mobileSummary *TripSummary) *uint {
+	// Get tracking data from S3 file for JSON storage
+	trainData, err := h.s3.GetTrainData(session.FilePath)
+	if err != nil {
+		fmt.Printf("ERROR: Could not read train data for trip saving: %v\n", err)
+		return nil
+	}
+
+	// Find user's tracking data for JSON storage
+	var userTrackingData []models.Passenger
+	for _, passenger := range trainData.Passengers {
+		if passenger.UserID == userID {
+			userTrackingData = append(userTrackingData, passenger)
+		}
+	}
+
+	if len(userTrackingData) == 0 {
+		fmt.Printf("ERROR: No tracking data found for user %d\n", userID)
+		return nil
+	}
+
+	// Get start/end points from tracking data
+	startPoint := userTrackingData[0]
+	endPoint := userTrackingData[len(userTrackingData)-1]
+	
+	// Prepare data as proper interfaces for JSON fields
+	var trackingDataInterface interface{} = userTrackingData
+	
+	// Extract route coordinates for map display
+	var routeCoords []map[string]interface{}
+	for _, point := range userTrackingData {
+		routeCoords = append(routeCoords, map[string]interface{}{
+			"lat":       point.Lat,
+			"lng":       point.Lng,
+			"timestamp": point.Timestamp,
+		})
+	}
+	var routeCoordsInterface interface{} = routeCoords
+
+	// Use mobile-calculated stats if provided, otherwise fallback to server calculation
+	var stats TripStatistics
+	var durationSeconds int
+	
+	if mobileSummary != nil {
+		fmt.Printf("DEBUG: Using mobile-calculated trip statistics\n")
+		// Use mobile statistics (preferred)
+		durationSeconds = mobileSummary.DurationSeconds
+		stats.TotalDistanceKm = mobileSummary.TotalDistanceKm
+		stats.MaxSpeedKmh = mobileSummary.MaxSpeedKmh
+		stats.AvgSpeedKmh = mobileSummary.AvgSpeedKmh
+		
+		if mobileSummary.MaxElevationM != nil {
+			stats.MaxElevationM = *mobileSummary.MaxElevationM
+		}
+		if mobileSummary.MinElevationM != nil {
+			stats.MinElevationM = *mobileSummary.MinElevationM
+		}
+		if mobileSummary.ElevationGainM != nil {
+			stats.ElevationGainM = *mobileSummary.ElevationGainM
+		}
+		
+		if mobileSummary.MaxSpeedLocation != nil {
+			stats.MaxSpeedLat = &mobileSummary.MaxSpeedLocation.Lat
+			stats.MaxSpeedLng = &mobileSummary.MaxSpeedLocation.Lng
+		}
+		if mobileSummary.MaxElevationLocation != nil {
+			stats.MaxElevationLat = &mobileSummary.MaxElevationLocation.Lat
+			stats.MaxElevationLng = &mobileSummary.MaxElevationLocation.Lng
+		}
+	} else {
+		fmt.Printf("DEBUG: Falling back to server-calculated trip statistics\n")
+		// Fallback to server calculation
+		durationSeconds = int((endPoint.Timestamp - startPoint.Timestamp) / 1000)
+		stats = h.calculateTripStatistics(userTrackingData)
+	}
+
+	// Create trip record
+	trip := models.Trip{
+		SessionID:        session.SessionID,
+		UserID:           &userID,
+		UserType:         "authenticated",
+		TrainID:          session.TrainID,
+		TrainName:        session.TrainNumber,
+		TrainNumber:      session.TrainNumber,
+		
+		// Statistical data (mobile-calculated preferred)
+		TotalDistanceKm:  stats.TotalDistanceKm,
+		MaxSpeedKmh:      stats.MaxSpeedKmh,
+		AvgSpeedKmh:      stats.AvgSpeedKmh,
+		MaxElevationM:    stats.MaxElevationM,
+		MinElevationM:    stats.MinElevationM,
+		ElevationGainM:   stats.ElevationGainM,
+		DurationSeconds:  durationSeconds,
+		
+		// Position data
+		StartLatitude:    startPoint.Lat,
+		StartLongitude:   startPoint.Lng,
+		EndLatitude:      endPoint.Lat,
+		EndLongitude:     endPoint.Lng,
+		MaxSpeedLat:      stats.MaxSpeedLat,
+		MaxSpeedLng:      stats.MaxSpeedLng,
+		MaxElevationLat:  stats.MaxElevationLat,
+		MaxElevationLng:  stats.MaxElevationLng,
+		
+		// JSON data (complete tracking history)
+		TrackingData:     trackingDataInterface,
+		RouteCoordinates: routeCoordsInterface,
+		
+		// Timestamps
+		StartedAt:        session.StartedAt,
+		CompletedAt:      time.Now(),
+	}
+
+	// Save to database
+	if err := h.db.Create(&trip).Error; err != nil {
+		fmt.Printf("ERROR: Failed to save trip: %v\n", err)
+		return nil
+	}
+
+	if mobileSummary != nil {
+		fmt.Printf("DEBUG: Saved trip ID %d with mobile stats - %.2fkm, %.1fkm/h max, %ds duration\n", 
+			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds)
+	} else {
+		fmt.Printf("DEBUG: Saved trip ID %d with server stats - %.2fkm, %.1fkm/h max, %ds duration\n", 
+			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds)
+	}
+	
+	return &trip.ID
+}
+
+// Trip statistics structure (server-calculated fallback)
+type TripStatistics struct {
+	TotalDistanceKm  float64
+	MaxSpeedKmh      float64
+	AvgSpeedKmh      float64
+	MaxElevationM    int
+	MinElevationM    int
+	ElevationGainM   int
+	MaxSpeedLat      *float64
+	MaxSpeedLng      *float64
+	MaxElevationLat  *float64
+	MaxElevationLng  *float64
+}
+
+// Mobile-calculated trip summary (preferred approach)
+type TripSummary struct {
+	TotalDistanceKm     float64                `json:"total_distance_km"`
+	MaxSpeedKmh         float64                `json:"max_speed_kmh"`
+	AvgSpeedKmh         float64                `json:"avg_speed_kmh"`
+	DurationSeconds     int                    `json:"duration_seconds"`
+	MaxElevationM       *int                   `json:"max_elevation_m,omitempty"`
+	MinElevationM       *int                   `json:"min_elevation_m,omitempty"`
+	ElevationGainM      *int                   `json:"elevation_gain_m,omitempty"`
+	MaxSpeedLocation    *LocationPoint         `json:"max_speed_location,omitempty"`
+	MaxElevationLocation *LocationPoint        `json:"max_elevation_location,omitempty"`
+}
+
+type LocationPoint struct {
+	Lat float64 `json:"lat"`
+	Lng float64 `json:"lng"`
+}
+
+// Calculate advanced trip statistics from GPS tracking data
+func (h *SimpleLiveTrackingHandler) calculateTripStatistics(trackingData []models.Passenger) TripStatistics {
+	stats := TripStatistics{}
+	
+	if len(trackingData) < 2 {
+		return stats // Not enough data
+	}
+	
+	var totalDistance float64 = 0
+	var totalSpeed float64 = 0
+	var speedCount int = 0
+	var maxSpeed float64 = 0
+	var maxElevation float64 = -1000
+	var minElevation float64 = 10000
+	
+	// Process each GPS point
+	for i, point := range trackingData {
+		// Calculate distance between consecutive points
+		if i > 0 {
+			prevPoint := trackingData[i-1]
+			distance := calculateDistance(prevPoint.Lat, prevPoint.Lng, point.Lat, point.Lng)
+			totalDistance += distance
+		}
+		
+		// Speed analysis
+		if point.Speed != nil && *point.Speed > 0 {
+			speed := *point.Speed
+			totalSpeed += speed
+			speedCount++
+			
+			if speed > maxSpeed {
+				maxSpeed = speed
+				stats.MaxSpeedLat = &point.Lat
+				stats.MaxSpeedLng = &point.Lng
+			}
+		}
+		
+		// Elevation analysis (if available)
+		if point.Altitude != nil {
+			altitude := *point.Altitude
+			if altitude > maxElevation {
+				maxElevation = altitude
+				stats.MaxElevationLat = &point.Lat
+				stats.MaxElevationLng = &point.Lng
+			}
+			if altitude < minElevation {
+				minElevation = altitude
+			}
+		}
+	}
+	
+	// Finalize statistics
+	stats.TotalDistanceKm = totalDistance
+	stats.MaxSpeedKmh = maxSpeed * 3.6 // Convert m/s to km/h
+	if speedCount > 0 {
+		stats.AvgSpeedKmh = (totalSpeed / float64(speedCount)) * 3.6
+	}
+	
+	if maxElevation > -1000 {
+		stats.MaxElevationM = int(maxElevation)
+	}
+	if minElevation < 10000 {
+		stats.MinElevationM = int(minElevation)
+	}
+	if maxElevation > -1000 && minElevation < 10000 {
+		stats.ElevationGainM = int(maxElevation - minElevation)
+	}
+	
+	return stats
+}
+
+// Calculate distance between two GPS coordinates (Haversine formula)
+func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
+	const R = 6371000 // Earth's radius in meters
+	
+	lat1Rad := lat1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	deltaLatRad := (lat2 - lat1) * math.Pi / 180
+	deltaLonRad := (lon2 - lon1) * math.Pi / 180
+	
+	a := math.Sin(deltaLatRad/2)*math.Sin(deltaLatRad/2) +
+		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
+		math.Sin(deltaLonRad/2)*math.Sin(deltaLonRad/2)
+	
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+	
+	return R * c / 1000 // Return distance in kilometers
 }
