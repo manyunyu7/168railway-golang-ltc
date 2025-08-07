@@ -139,3 +139,23 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
 ```
 
 **Note**: Debug logging is enabled in production, so server logs will show token validation details for troubleshooting.
+
+## Available Endpoints
+
+### Public Endpoints (No Authentication Required)
+- `GET /health` - Health check endpoint
+- `GET /api/active-train-list` - **New**: Public endpoint serving active trains list
+  - Replaces direct S3 access: `https://is3.cloudhost.id/168railwaylivetracking/trains/trains-list.json`
+  - Frontend should use: `https://go-ltc.trainradar35.com/api/active-train-list`
+  - Returns JSON with active trains, passenger counts, and last update times
+  - Includes proper CORS headers and cache control
+
+### Protected Endpoints (Require Laravel Sanctum Token)
+All protected endpoints require `Authorization: Bearer {token}` header:
+
+- `GET /api/mobile/live-tracking/active-session` - Check if user has active tracking session
+- `POST /api/mobile/live-tracking/start` - Start new tracking session
+- `POST /api/mobile/live-tracking/update` - Update GPS location during tracking
+- `POST /api/mobile/live-tracking/heartbeat` - Send heartbeat to maintain session
+- `POST /api/mobile/live-tracking/recover` - Recover lost session
+- `POST /api/mobile/live-tracking/stop` - Stop tracking session
