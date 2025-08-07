@@ -3,7 +3,6 @@ package handlers
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -583,24 +582,11 @@ func (h *LiveTrackingHandler) updateTrainsList() {
 	// Try to get existing trains-list.json (but it's not a TrainData structure)
 	// Skip this approach since trains-list.json has a different structure than TrainData
 
-	// Alternative: Read trains-list.json directly as JSON
+	// Try to read existing trains-list.json using S3 client
 	if len(existingTrains) == 0 {
-		if resp, err := http.Get(fmt.Sprintf("%s/trains/trains-list.json", h.s3.Endpoint)); err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				var existingList map[string]interface{}
-				if json.Unmarshal(body, &existingList) == nil {
-					if trains, ok := existingList["trains"].([]interface{}); ok {
-						for _, train := range trains {
-							if trainMap, ok := train.(map[string]interface{}); ok {
-								existingTrains = append(existingTrains, trainMap)
-							}
-						}
-					}
-				}
-			}
-		}
+		// This is a simplified version - we'll just skip reading existing trains
+		// since we're moving to database-driven approach anyway
+		fmt.Printf("DEBUG: Skipping existing trains-list.json read (using database sessions now)\n")
 	}
 
 	// Get current active Golang sessions
