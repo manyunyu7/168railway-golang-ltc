@@ -745,10 +745,15 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 			return nil, "No tracking data found for user"
 		}
 
-		// Use S3 data for tracking
-		trackingDataInterface = userTrackingData
+		// Use S3 data for tracking - serialize to JSON
+		s3JsonBytes, err := json.Marshal(userTrackingData)
+		if err != nil {
+			fmt.Printf("ERROR: Failed to marshal S3 tracking data: %v\n", err)
+			return nil, fmt.Sprintf("Failed to serialize S3 tracking data: %v", err)
+		}
+		trackingDataInterface = json.RawMessage(s3JsonBytes)
 		
-		// Extract route coordinates from S3 data
+		// Extract route coordinates from S3 data and serialize to JSON
 		var routeCoords []map[string]interface{}
 		for _, point := range userTrackingData {
 			routeCoords = append(routeCoords, map[string]interface{}{
@@ -757,7 +762,12 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 				"timestamp": point.Timestamp,
 			})
 		}
-		routeCoordsInterface = routeCoords
+		s3RouteBytes, err := json.Marshal(routeCoords)
+		if err != nil {
+			fmt.Printf("ERROR: Failed to marshal S3 route coordinates: %v\n", err)
+			return nil, fmt.Sprintf("Failed to serialize S3 route data: %v", err)
+		}
+		routeCoordsInterface = json.RawMessage(s3RouteBytes)
 		
 		// Get start/end points from S3 data
 		startLat = userTrackingData[0].Lat
