@@ -429,6 +429,9 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	var tripSaved bool = false
 	var tripID *uint = nil
 	
+	// Track failure reason
+	var saveFailureReason string = ""
+	
 	// Save trip data if requested
 	if req.SaveTrip != nil && *req.SaveTrip {
 		stationInfo := StationInfo{
@@ -438,10 +441,21 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 			ToStationID:     req.ToStationID,
 			ToStationName:   req.ToStationName,
 		}
-		tripID = h.saveUserTrip(session, user.ID, req.TripSummary, req.GPSPath, &stationInfo)
+		tripID, saveFailureReason = h.saveUserTrip(session, user.ID, req.TripSummary, req.GPSPath, &stationInfo)
 		tripSaved = (tripID != nil)
 		if tripSaved {
 			fmt.Printf("DEBUG: Saved trip with ID %d for user %d\n", *tripID, user.ID)
+		} else {
+			if saveFailureReason == "" {
+				saveFailureReason = "Trip saving failed - check server logs for details"
+			}
+			fmt.Printf("WARNING: Trip saving failed for user %d session %s: %s\n", user.ID, req.SessionID, saveFailureReason)
+		}
+	} else {
+		if req.SaveTrip == nil {
+			saveFailureReason = "save_trip parameter not provided"
+		} else {
+			saveFailureReason = "save_trip set to false"
 		}
 	}
 	
@@ -470,6 +484,11 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 	
 	if tripID != nil {
 		response["trip_id"] = *tripID
+	}
+	
+	// Add save failure reason if trip wasn't saved
+	if !tripSaved && saveFailureReason != "" {
+		response["save_failure_reason"] = saveFailureReason
 	}
 
 	c.JSON(http.StatusOK, response)
@@ -660,7 +679,7 @@ func (h *SimpleLiveTrackingHandler) recalculateAveragePosition(trainData *models
 }
 
 // Save user trip data to trips table using mobile GPS path and statistics
-func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSession, userID uint, mobileSummary *TripSummary, gpsPath []GPSPoint, stationInfo *StationInfo) *uint {
+func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSession, userID uint, mobileSummary *TripSummary, gpsPath []GPSPoint, stationInfo *StationInfo) (*uint, string) {
 	
 	// Use mobile GPS path if provided, otherwise fallback to S3 data
 	var trackingDataInterface interface{}
@@ -697,7 +716,7 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		trainData, err := h.s3.GetTrainData(session.FilePath)
 		if err != nil {
 			fmt.Printf("ERROR: Could not read train data for trip saving: %v\n", err)
-			return nil
+			return nil, "Failed to read S3 train data"
 		}
 
 		// Find user's tracking data from S3
@@ -710,7 +729,7 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 
 		if len(userTrackingData) == 0 {
 			fmt.Printf("ERROR: No tracking data found for user %d\n", userID)
-			return nil
+			return nil, "No tracking data found for user"
 		}
 
 		// Use S3 data for tracking
@@ -825,7 +844,7 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 	// Save to database
 	if err := h.db.Create(&trip).Error; err != nil {
 		fmt.Printf("ERROR: Failed to save trip: %v\n", err)
-		return nil
+		return nil, fmt.Sprintf("Database error: %v", err)
 	}
 
 	// Log station information
@@ -842,7 +861,7 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 			trip.ID, stats.TotalDistanceKm, stats.MaxSpeedKmh, durationSeconds, stationLog)
 	}
 	
-	return &trip.ID
+	return &trip.ID, ""
 }
 
 // Trip statistics structure (server-calculated fallback)
