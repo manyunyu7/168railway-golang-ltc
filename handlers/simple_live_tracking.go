@@ -689,8 +689,23 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 	if len(gpsPath) > 0 {
 		fmt.Printf("DEBUG: Using mobile GPS path with %d points\n", len(gpsPath))
 		
-		// Use mobile GPS path for complete journey data
-		trackingDataInterface = gpsPath
+		// Convert GPS path to JSON-serializable format
+		var jsonGpsPath []map[string]interface{}
+		for _, point := range gpsPath {
+			jsonPoint := map[string]interface{}{
+				"lat":       point.Lat,
+				"lng":       point.Lng,
+				"timestamp": point.Timestamp,
+			}
+			if point.Speed != nil {
+				jsonPoint["speed"] = *point.Speed
+			}
+			if point.Altitude != nil {
+				jsonPoint["altitude"] = *point.Altitude
+			}
+			jsonGpsPath = append(jsonGpsPath, jsonPoint)
+		}
+		trackingDataInterface = jsonGpsPath
 		
 		// Extract route coordinates for map display
 		var routeCoords []map[string]interface{}
