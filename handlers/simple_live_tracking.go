@@ -697,15 +697,10 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 			return nil, fmt.Sprintf("Failed to serialize GPS data: %v", err)
 		}
 		
-		// Parse back to interface{} for GORM
-		var jsonInterface interface{}
-		if err := json.Unmarshal(jsonBytes, &jsonInterface); err != nil {
-			fmt.Printf("ERROR: Failed to unmarshal GPS JSON: %v\n", err)
-			return nil, fmt.Sprintf("Failed to parse GPS data: %v", err)
-		}
-		trackingDataInterface = jsonInterface
+		// Use json.RawMessage for direct JSON storage
+		trackingDataInterface = json.RawMessage(jsonBytes)
 		
-		// Extract route coordinates for map display
+		// Extract route coordinates for map display and serialize to JSON
 		var routeCoords []map[string]interface{}
 		for _, point := range gpsPath {
 			routeCoords = append(routeCoords, map[string]interface{}{
@@ -714,7 +709,12 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 				"timestamp": point.Timestamp,
 			})
 		}
-		routeCoordsInterface = routeCoords
+		routeBytes, err := json.Marshal(routeCoords)
+		if err != nil {
+			fmt.Printf("ERROR: Failed to marshal route coordinates: %v\n", err)
+			return nil, fmt.Sprintf("Failed to serialize route data: %v", err)
+		}
+		routeCoordsInterface = json.RawMessage(routeBytes)
 		
 		// Get start/end points from GPS path
 		startLat = gpsPath[0].Lat
