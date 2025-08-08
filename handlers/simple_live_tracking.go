@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
@@ -689,23 +690,20 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 	if len(gpsPath) > 0 {
 		fmt.Printf("DEBUG: Using mobile GPS path with %d points\n", len(gpsPath))
 		
-		// Convert GPS path to JSON-serializable format
-		var jsonGpsPath []map[string]interface{}
-		for _, point := range gpsPath {
-			jsonPoint := map[string]interface{}{
-				"lat":       point.Lat,
-				"lng":       point.Lng,
-				"timestamp": point.Timestamp,
-			}
-			if point.Speed != nil {
-				jsonPoint["speed"] = *point.Speed
-			}
-			if point.Altitude != nil {
-				jsonPoint["altitude"] = *point.Altitude
-			}
-			jsonGpsPath = append(jsonGpsPath, jsonPoint)
+		// Convert GPS path to JSON bytes for database storage
+		jsonBytes, err := json.Marshal(gpsPath)
+		if err != nil {
+			fmt.Printf("ERROR: Failed to marshal GPS path: %v\n", err)
+			return nil, fmt.Sprintf("Failed to serialize GPS data: %v", err)
 		}
-		trackingDataInterface = jsonGpsPath
+		
+		// Parse back to interface{} for GORM
+		var jsonInterface interface{}
+		if err := json.Unmarshal(jsonBytes, &jsonInterface); err != nil {
+			fmt.Printf("ERROR: Failed to unmarshal GPS JSON: %v\n", err)
+			return nil, fmt.Sprintf("Failed to parse GPS data: %v", err)
+		}
+		trackingDataInterface = jsonInterface
 		
 		// Extract route coordinates for map display
 		var routeCoords []map[string]interface{}
