@@ -28,6 +28,53 @@
 					"response": []
 				},
 				{
+					"name": "Get App Version Info",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/app-version",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"app-version"
+							]
+						},
+						"description": "Get current app version information and update details"
+					},
+					"response": []
+				},
+				{
+					"name": "Check Version Compatibility",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"version\": \"1.1.5\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/check-version",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"check-version"
+							]
+						},
+						"description": "Validate client app version and get compatibility information"
+					},
+					"response": []
+				},
+				{
 					"name": "Generate Bearer Token (Laravel)",
 					"event": [
 						{
