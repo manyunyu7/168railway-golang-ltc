@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"math/rand"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
@@ -76,9 +77,25 @@ func main() {
 
 	// Health check endpoint
 	r.GET("/health", func(c *gin.Context) {
+		quotes := []string{
+			"The journey of a thousand miles begins with one step. - Lao Tzu",
+			"Life is like riding a bicycle. To keep your balance, you must keep moving. - Albert Einstein",
+			"It is during our darkest moments that we must focus to see the light. - Aristotle",
+			"Success is not final, failure is not fatal: it is the courage to continue that counts. - Winston Churchill",
+			"The only way to do great work is to love what you do. - Steve Jobs",
+			"Innovation distinguishes between a leader and a follower. - Steve Jobs",
+			"The future belongs to those who believe in the beauty of their dreams. - Eleanor Roosevelt",
+			"It always seems impossible until it's done. - Nelson Mandela",
+			"Don't watch the clock; do what it does. Keep going. - Sam Levenson",
+			"Believe you can and you're halfway there. - Theodore Roosevelt",
+		}
+		
+		randomQuote := quotes[rand.Intn(len(quotes))]
+		
 		c.JSON(200, gin.H{
 			"status": "ok",
 			"service": "golang-live-tracking",
+			"quote": randomQuote,
 		})
 	})
 
