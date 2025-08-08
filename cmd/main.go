@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/mysql"
@@ -15,6 +17,53 @@ import (
 	"github.com/modernland/golang-live-tracking/models"
 	"github.com/modernland/golang-live-tracking/utils"
 )
+
+// compareVersions compares two semantic version strings
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+func compareVersions(v1, v2 string) int {
+	// Remove 'v' prefix if present
+	v1 = strings.TrimPrefix(v1, "v")
+	v2 = strings.TrimPrefix(v2, "v")
+	
+	parts1 := strings.Split(v1, ".")
+	parts2 := strings.Split(v2, ".")
+	
+	// Pad shorter version with zeros
+	maxLen := len(parts1)
+	if len(parts2) > maxLen {
+		maxLen = len(parts2)
+	}
+	
+	for len(parts1) < maxLen {
+		parts1 = append(parts1, "0")
+	}
+	for len(parts2) < maxLen {
+		parts2 = append(parts2, "0")
+	}
+	
+	// Compare each part
+	for i := 0; i < maxLen; i++ {
+		n1, err1 := strconv.Atoi(parts1[i])
+		n2, err2 := strconv.Atoi(parts2[i])
+		
+		// If conversion fails, treat as 0
+		if err1 != nil {
+			n1 = 0
+		}
+		if err2 != nil {
+			n2 = 0
+		}
+		
+		if n1 < n2 {
+			return -1
+		}
+		if n1 > n2 {
+			return 1
+		}
+	}
+	
+	return 0 // Equal
+}
 
 func main() {
 	// Load configuration
@@ -108,6 +157,67 @@ func main() {
 		// Public endpoints for train data (replace direct S3 access)
 		api.GET("/active-train-list", liveTrackingHandler.GetActiveTrainsList)
 		api.GET("/train/:trainNumber", liveTrackingHandler.GetTrainData)
+		
+		// Version control endpoints
+		api.GET("/app-version", func(c *gin.Context) {
+			c.JSON(200, gin.H{
+				"current_version": "1.2.0",
+				"minimum_version": "1.1.0",
+				"force_update": false,
+				"update_message": "A new version is available with bug fixes and improvements!",
+				"download_url": "https://github.com/manyunyu7/168railway-golang-ltc/releases",
+			})
+		})
+		
+		// Version validation endpoint
+		api.POST("/check-version", func(c *gin.Context) {
+			var req struct {
+				Version string `json:"version" binding:"required"`
+			}
+			
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(400, gin.H{
+					"success": false,
+					"error": "Invalid request format",
+					"message": "Version parameter is required",
+				})
+				return
+			}
+			
+			currentVersion := "1.2.0"
+			minimumVersion := "1.1.0"
+			
+			// Simple version comparison (assumes semantic versioning)
+			isSupported := compareVersions(req.Version, minimumVersion) >= 0
+			isLatest := compareVersions(req.Version, currentVersion) >= 0
+			
+			response := gin.H{
+				"success": true,
+				"supported": isSupported,
+				"is_latest": isLatest,
+				"client_version": req.Version,
+				"current_version": currentVersion,
+				"minimum_version": minimumVersion,
+			}
+			
+			if !isSupported {
+				response["force_update"] = true
+				response["message"] = "Your app version is no longer supported. Please update to continue using the service."
+				response["download_url"] = "https://github.com/manyunyu7/168railway-golang-ltc/releases"
+				c.JSON(200, response)
+				return
+			}
+			
+			if !isLatest {
+				response["update_available"] = true
+				response["message"] = "A new version is available with bug fixes and improvements!"
+				response["download_url"] = "https://github.com/manyunyu7/168railway-golang-ltc/releases"
+			} else {
+				response["message"] = "You are using the latest version!"
+			}
+			
+			c.JSON(200, response)
+		})
 		
 		// WebSocket upgrade information endpoint
 		api.GET("/websocket-info", func(c *gin.Context) {

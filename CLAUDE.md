@@ -145,7 +145,7 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
 ### Public Endpoints (No Authentication Required)
 
 #### HTTP Endpoints
-- `GET /health` - Health check endpoint
+- `GET /health` - Health check endpoint with inspirational quotes
 - `GET /api/active-train-list` - **New**: Public endpoint serving active trains list
   - Replaces direct S3 access: `https://is3.cloudhost.id/168railwaylivetracking/trains/trains-list.json`
   - Frontend should use: `https://go-ltc.trainradar35.com/api/active-train-list`
@@ -156,6 +156,15 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
   - Frontend should use: `https://go-ltc.trainradar35.com/api/train/{trainNumber}`
   - Returns individual train data with passengers, positions, and tracking info
   - Returns 404 if train not found
+
+#### Version Control Endpoints
+- `GET /api/app-version` - **New**: Get current app version information
+  - Returns current version, minimum supported version, and update details
+  - Used by mobile apps to check for available updates
+- `POST /api/check-version` - **New**: Validate client app version compatibility
+  - Request body: `{"version": "1.1.5"}`
+  - Returns detailed compatibility information and update requirements
+  - See [VERSION_API_GUIDE.md](VERSION_API_GUIDE.md) for complete documentation
 
 #### WebSocket Endpoint (Real-time Updates) ⚡
 - `WSS /ws/trains` - **New**: Real-time train tracking WebSocket
