@@ -55,6 +55,29 @@ go build -o bin/golang-live-tracking cmd/main.go
 ./bin/golang-live-tracking
 ```
 
+### Production Deployment
+```bash
+# Pull latest changes from git
+git pull
+
+# Rebuild the binary (Go is compiled, not interpreted)
+go build -o go-ltc cmd/main.go
+
+# Restart the service to load new code
+sudo pkill -f "/var/www/go-ltc/go-ltc"
+sudo -u www-data nohup /var/www/go-ltc/go-ltc > /var/www/go-ltc/app.log 2>&1 &
+
+# Verify service is running
+ps aux | grep go-ltc
+
+# Check health endpoint
+curl https://go-ltc.trainradar35.com/health
+```
+
+**Important**: Changes won't be reflected at https://go-ltc.trainradar35.com/ until you rebuild and restart the service. Go is a compiled language, so pulling code changes alone is not sufficient. You MUST restart the service after building.
+
+**Why go build appears to do nothing**: Go only shows errors, not success messages. When `go build` runs silently, it means the build succeeded.
+
 ### Docker
 ```bash
 # Build image
