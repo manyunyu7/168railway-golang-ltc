@@ -17,6 +17,10 @@ type Config struct {
 	RedisHost     string
 	RedisPort     string
 	RedisPassword string
+	
+	// App Version
+	CurrentVersion string
+	MinimumVersion string
 
 	// Server
 	Port    string
@@ -48,6 +52,8 @@ func LoadConfig() *Config {
 		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
 		Port:              getEnv("PORT", "8080"),
 		GinMode:           getEnv("GIN_MODE", "debug"),
+		CurrentVersion:    getEnv("APP_CURRENT_VERSION", "1.2.0"),
+		MinimumVersion:    getEnv("APP_MINIMUM_VERSION", "1.1.0"),
 		LaravelAppKey:     getEnv("LARAVEL_APP_KEY", ""),
 		SanctumTokenPrefix: getEnv("SANCTUM_TOKEN_PREFIX", ""),
 		S3AccessKey:       getEnv("S3_ACCESS_KEY", ""),

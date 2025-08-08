@@ -75,6 +75,25 @@
 					"response": []
 				},
 				{
+					"name": "Reload Version Config",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/reload-version-config",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"reload-version-config"
+							]
+						},
+						"description": "Reload version configuration from version-config.json file without restarting service"
+					},
+					"response": []
+				},
+				{
 					"name": "Generate Bearer Token (Laravel)",
 					"event": [
 						{

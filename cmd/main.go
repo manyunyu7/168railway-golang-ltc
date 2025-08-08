@@ -160,12 +160,14 @@ func main() {
 		
 		// Version control endpoints
 		api.GET("/app-version", func(c *gin.Context) {
+			versionConfig := utils.GetVersionConfig()
 			c.JSON(200, gin.H{
-				"current_version": "1.2.0",
-				"minimum_version": "1.1.0",
-				"force_update": false,
-				"update_message": "A new version is available with bug fixes and improvements!",
-				"download_url": "https://github.com/manyunyu7/168railway-golang-ltc/releases",
+				"current_version": versionConfig.CurrentVersion,
+				"minimum_version": versionConfig.MinimumVersion,
+				"force_update":    versionConfig.ForceUpdate,
+				"update_message":  versionConfig.UpdateMessage,
+				"download_url":    versionConfig.DownloadURL,
+				"last_updated":    versionConfig.LastUpdated,
 			})
 		})
 		
@@ -184,8 +186,9 @@ func main() {
 				return
 			}
 			
-			currentVersion := "1.2.0"
-			minimumVersion := "1.1.0"
+			versionConfig := utils.GetVersionConfig()
+			currentVersion := versionConfig.CurrentVersion
+			minimumVersion := versionConfig.MinimumVersion
 			
 			// Simple version comparison (assumes semantic versioning)
 			isSupported := compareVersions(req.Version, minimumVersion) >= 0
@@ -217,6 +220,27 @@ func main() {
 			}
 			
 			c.JSON(200, response)
+		})
+		
+		// Reload version config endpoint (admin use)
+		api.POST("/reload-version-config", func(c *gin.Context) {
+			config, err := utils.ReloadVersionConfig()
+			if err != nil {
+				c.JSON(500, gin.H{
+					"success": false,
+					"message": "Failed to reload version config",
+					"error":   err.Error(),
+				})
+				return
+			}
+			
+			c.JSON(200, gin.H{
+				"success":         true,
+				"message":         "Version configuration reloaded successfully",
+				"current_version": config.CurrentVersion,
+				"minimum_version": config.MinimumVersion,
+				"last_updated":    config.LastUpdated,
+			})
 		})
 		
 		// WebSocket upgrade information endpoint
