@@ -747,13 +747,13 @@ func (h *SimpleLiveTrackingHandler) saveUserTrip(session models.LiveTrackingSess
 		stats.AvgSpeedKmh = mobileSummary.AvgSpeedKmh
 		
 		if mobileSummary.MaxElevationM != nil {
-			stats.MaxElevationM = *mobileSummary.MaxElevationM
+			stats.MaxElevationM = int(*mobileSummary.MaxElevationM)
 		}
 		if mobileSummary.MinElevationM != nil {
-			stats.MinElevationM = *mobileSummary.MinElevationM
+			stats.MinElevationM = int(*mobileSummary.MinElevationM)
 		}
 		if mobileSummary.ElevationGainM != nil {
-			stats.ElevationGainM = *mobileSummary.ElevationGainM
+			stats.ElevationGainM = int(*mobileSummary.ElevationGainM)
 		}
 		
 		if mobileSummary.MaxSpeedLocation != nil {
@@ -865,9 +865,9 @@ type TripSummary struct {
 	MaxSpeedKmh         float64                `json:"max_speed_kmh"`
 	AvgSpeedKmh         float64                `json:"avg_speed_kmh"`
 	DurationSeconds     int                    `json:"duration_seconds"`
-	MaxElevationM       *int                   `json:"max_elevation_m,omitempty"`
-	MinElevationM       *int                   `json:"min_elevation_m,omitempty"`
-	ElevationGainM      *int                   `json:"elevation_gain_m,omitempty"`
+	MaxElevationM       *float64               `json:"max_elevation_m,omitempty"`
+	MinElevationM       *float64               `json:"min_elevation_m,omitempty"`
+	ElevationGainM      *float64               `json:"elevation_gain_m,omitempty"`
 	MaxSpeedLocation    *LocationPoint         `json:"max_speed_location,omitempty"`
 	MaxElevationLocation *LocationPoint        `json:"max_elevation_location,omitempty"`
 }
