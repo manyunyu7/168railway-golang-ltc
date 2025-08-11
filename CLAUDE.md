@@ -57,26 +57,36 @@ go build -o bin/golang-live-tracking cmd/main.go
 
 ### Production Deployment
 ```bash
-# Pull latest changes from git
+# 1. Stash any local changes (server is only for deployment, not development)
+git stash --all
+
+# 2. Pull latest code from repository
 git pull
 
-# Rebuild the binary (Go is compiled, not interpreted)
+# 3. Rebuild the binary (Go is compiled, not interpreted)
 go build -o go-ltc cmd/main.go
 
-# Restart the service to load new code
-sudo pkill -f "/var/www/go-ltc/go-ltc"
-sudo -u www-data nohup /var/www/go-ltc/go-ltc > /var/www/go-ltc/app.log 2>&1 &
+# 4. Restart the systemd service (NOT manual process)
+sudo systemctl restart go-ltc
 
-# Verify service is running
-ps aux | grep go-ltc
+# 5. Check if service is running properly
+sudo systemctl status go-ltc
 
-# Check health endpoint
+# 6. Test the health endpoint
 curl https://go-ltc.trainradar35.com/health
 ```
 
-**Important**: Changes won't be reflected at https://go-ltc.trainradar35.com/ until you rebuild and restart the service. Go is a compiled language, so pulling code changes alone is not sufficient. You MUST restart the service after building.
+**Important Deployment Notes**:
+- **Environment Configuration**: The `.env` file must exist at `/var/www/go-ltc/.env` with correct database credentials (DB_USERNAME, DB_PASSWORD, DB_NAME, etc.)
+- **Service Management**: Always use systemd to manage the service (`sudo systemctl restart go-ltc`), NOT manual nohup commands
+- **Build Required**: Go is a compiled language - changes won't take effect until you rebuild with `go build` AND restart the service
+- **Check Logs**: If issues occur, check systemd logs with `sudo journalctl -u go-ltc -n 50`
+- **Silent Success**: When `go build` runs without output, it means the build succeeded (Go only shows errors, not success messages)
 
-**Why go build appears to do nothing**: Go only shows errors, not success messages. When `go build` runs silently, it means the build succeeded.
+**Common Issues**:
+- If service fails to start: Check `.env` file exists and has correct DB_USERNAME (not DB_USER)
+- If endpoints return 404: Ensure you've rebuilt the binary and restarted the service
+- Database connection errors: Verify `.env` has correct credentials matching the Laravel application's database
 
 ### Docker
 ```bash
