@@ -13,10 +13,6 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
-	// Redis
-	RedisHost     string
-	RedisPort     string
-	RedisPassword string
 	
 	// App Version
 	CurrentVersion string
@@ -47,9 +43,6 @@ func LoadConfig() *Config {
 		DBUsername:        getEnv("DB_USERNAME", "root"),
 		DBPassword:        getEnv("DB_PASSWORD", ""),
 		DBName:            getEnv("DB_NAME", "database"),
-		RedisHost:         getEnv("REDIS_HOST", "localhost"),
-		RedisPort:         getEnv("REDIS_PORT", "6379"),
-		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
 		Port:              getEnv("PORT", "8080"),
 		GinMode:           getEnv("GIN_MODE", "debug"),
 		CurrentVersion:    getEnv("APP_CURRENT_VERSION", "1.2.0"),

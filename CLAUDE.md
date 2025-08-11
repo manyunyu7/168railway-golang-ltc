@@ -23,7 +23,7 @@ This is a high-performance Golang replacement for Laravel live tracking API endp
 - `cmd/main.go` - Application entry point, simplified implementation without Redis/S3
 - `config/config.go` - Environment configuration loading with godotenv
 - `middleware/auth.go` - Laravel Sanctum token authentication with debug logging
-- `handlers/live_tracking.go` - Simplified API endpoints (using `NewSimpleLiveTrackingHandler`)
+- `handlers/simple_live_tracking.go` - Live tracking API endpoints (using `NewSimpleLiveTrackingHandler`)
 - `models/models.go` - Database models matching Laravel schema
 - `utils/s3.go` - S3 client (currently unused in production)
 
