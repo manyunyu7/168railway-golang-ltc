@@ -151,3 +151,123 @@ type LiveTrackingSession struct {
 func (LiveTrackingSession) TableName() string {
 	return "live_tracking_sessions"
 }
+
+// Station model matching Laravel stations table
+type Station struct {
+	StationID   uint     `json:"station_id" gorm:"primaryKey"`
+	StationCode string   `json:"station_code"`
+	StationName string   `json:"station_name"`
+	Latitude    *float64 `json:"latitude"`
+	Longitude   *float64 `json:"longitude"`
+	Platforms   []Platform `json:"platforms" gorm:"foreignKey:StationID"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (Station) TableName() string {
+	return "stations"
+}
+
+// Platform model matching Laravel platforms table
+type Platform struct {
+	ID                   uint    `json:"id" gorm:"primaryKey"`
+	StationID            uint    `json:"station_id"`
+	PlatformName         string  `json:"platform_name"`
+	PlatformNumber       *string `json:"platform_number"`
+	GeojsonCoordinates   *string `json:"geojson_coordinates"`
+	Properties           *string `json:"properties"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+func (Platform) TableName() string {
+	return "platforms"
+}
+
+// Train model matching Laravel trains table
+type Train struct {
+	TrainID         uint    `json:"train_id" gorm:"primaryKey"`
+	TrainNumber     string  `json:"train_number"`
+	TrainName       string  `json:"train_name"`
+	Relation        *string `json:"relation"`
+	TrainType       *string `json:"train_type"`
+	Description     *string `json:"description"`
+	MaximumSpeed    *int    `json:"maximum_speed"`
+	Region          *string `json:"region"`
+	IsActive        bool    `json:"is_active" gorm:"default:true"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (Train) TableName() string {
+	return "trains"
+}
+
+// ScheduleDetail model matching Laravel schedule_details table
+type ScheduleDetail struct {
+	ScheduleDetailID uint      `json:"schedule_detail_id" gorm:"primaryKey"`
+	TrainID          uint      `json:"train_id"`
+	StationID        uint      `json:"station_id"`
+	StopSequence     int       `json:"stop_sequence"`
+	ArrivalTime      *string   `json:"arrival_time"`
+	DepartureTime    *string   `json:"departure_time"`
+	IsPassThrough    bool      `json:"is_pass_through" gorm:"default:false"`
+	Remarks          *string   `json:"remarks"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+	// Relationships
+	Train   Train   `json:"train,omitempty" gorm:"foreignKey:TrainID"`
+	Station Station `json:"station,omitempty" gorm:"foreignKey:StationID"`
+}
+
+func (ScheduleDetail) TableName() string {
+	return "schedule_details"
+}
+
+// OperationalRoute model matching Laravel operational_routes table
+type OperationalRoute struct {
+	ID                      uint         `json:"id" gorm:"primaryKey"`
+	OperationalRouteCode    *string      `json:"operational_route_code"`
+	Name                    string       `json:"name"`
+	Description             *string      `json:"description"`
+	StartStationID          *uint        `json:"start_station_id"`
+	EndStationID            *uint        `json:"end_station_id"`
+	Status                  string       `json:"status" gorm:"default:active"`
+	Operator                *string      `json:"operator"`
+	CreatedAt               time.Time    `json:"created_at"`
+	UpdatedAt               time.Time    `json:"updated_at"`
+	// Relationships
+	StartStation            *Station     `json:"start_station,omitempty" gorm:"foreignKey:StartStationID"`
+	EndStation              *Station     `json:"end_station,omitempty" gorm:"foreignKey:EndStationID"`
+	RailwayLines            []RailwayLine `json:"railway_lines,omitempty" gorm:"many2many:operational_route_railway_line;"`
+}
+
+func (OperationalRoute) TableName() string {
+	return "operational_routes"
+}
+
+// RailwayLine model matching Laravel railway_lines table
+type RailwayLine struct {
+	ID                 uint                 `json:"id" gorm:"primaryKey"`
+	Name               string               `json:"name"`
+	Geometry           *RailwayLineGeometry `json:"geometry,omitempty"`
+	Electrification    bool                 `json:"electrification" gorm:"default:false"`
+	TrainTypesAllowed  *string              `json:"train_types_allowed"`
+	FromStationID      *uint                `json:"from_station_id"`
+	ToStationID        *uint                `json:"to_station_id"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+	// Relationships
+	FromStation        *Station             `json:"from_station,omitempty" gorm:"foreignKey:FromStationID"`
+	ToStation          *Station             `json:"to_station,omitempty" gorm:"foreignKey:ToStationID"`
+}
+
+func (RailwayLine) TableName() string {
+	return "railway_lines"
+}
+
+// RailwayLineGeometry represents the geometry field in railway_lines
+type RailwayLineGeometry struct {
+	Type        string          `json:"type"`
+	Coordinates [][]float64     `json:"coordinates"`
+}

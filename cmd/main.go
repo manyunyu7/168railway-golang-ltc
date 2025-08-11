@@ -106,6 +106,8 @@ func main() {
 	liveTrackingHandler := handlers.NewSimpleLiveTrackingHandler(db, s3Client)
 	// Initialize WebSocket handler for real-time updates
 	wsHandler := handlers.NewWebSocketHandler(db, s3Client)
+	// Initialize API endpoints handler
+	apiEndpointsHandler := handlers.NewAPIEndpointsHandler(db)
 
 	// Setup routes
 	r := gin.Default()
@@ -157,6 +159,15 @@ func main() {
 		// Public endpoints for train data (replace direct S3 access)
 		api.GET("/active-train-list", liveTrackingHandler.GetActiveTrainsList)
 		api.GET("/train/:trainNumber", liveTrackingHandler.GetTrainData)
+		
+		// Public API endpoints matching Laravel railway API
+		api.GET("/stations", apiEndpointsHandler.GetStations)
+		api.GET("/stations/:id", apiEndpointsHandler.GetStationByID)
+		api.GET("/stations/search", apiEndpointsHandler.SearchStations)
+		api.GET("/schedules", apiEndpointsHandler.GetSchedules)
+		api.GET("/trains/:id/schedule", apiEndpointsHandler.GetTrainSchedule)
+		api.GET("/operational-routes-pathway", apiEndpointsHandler.GetOperationalRoutesPathway)
+		api.GET("/operational-routes/:id", apiEndpointsHandler.GetOperationalRouteByID)
 		
 		// Version control endpoints
 		api.GET("/app-version", func(c *gin.Context) {
