@@ -253,16 +253,33 @@ func (OperationalRoute) TableName() string {
 type RailwayLine struct {
 	ID                 uint                 `json:"id" gorm:"primaryKey"`
 	Name               string               `json:"name"`
+	OSMId              *string              `json:"osm_id"`
+	RailwayType        *string              `json:"railway_type"`
 	Geometry           *RailwayLineGeometry `json:"geometry,omitempty" gorm:"type:json"`
 	Electrification    bool                 `json:"electrification" gorm:"default:false"`
 	TrainTypesAllowed  *string              `json:"train_types_allowed"`
 	FromStationID      *uint                `json:"from_station_id"`
 	ToStationID        *uint                `json:"to_station_id"`
+	SpeedLimit         *int                 `json:"speed_limit"`
+	Notes              *string              `json:"notes"`
+	Layer              *string              `json:"layer"`
+	OperatorType       *string              `json:"operator_type"`
+	SourceData         *string              `json:"source_data"`
 	CreatedAt          time.Time            `json:"created_at"`
 	UpdatedAt          time.Time            `json:"updated_at"`
 	// Relationships
 	FromStation        *Station             `json:"from_station,omitempty" gorm:"foreignKey:FromStationID"`
 	ToStation          *Station             `json:"to_station,omitempty" gorm:"foreignKey:ToStationID"`
+	// Pivot data for many-to-many relationship with operational routes
+	Pivot              *OperationalRoutePivot `json:"pivot,omitempty" gorm:"-"`
+}
+
+// OperationalRoutePivot represents the pivot table data
+type OperationalRoutePivot struct {
+	OperationalRouteID uint `json:"operational_route_id"`
+	RailwayLineID      uint `json:"railway_line_id"`
+	Sequence           *int `json:"sequence,omitempty"`
+	IsReversed         *bool `json:"is_reversed,omitempty"`
 }
 
 func (RailwayLine) TableName() string {

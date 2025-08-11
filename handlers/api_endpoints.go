@@ -80,20 +80,47 @@ func (h *APIEndpointsHandler) GetOperationalRoutesPathway(c *gin.Context) {
 		return
 	}
 
-	// Then, separately load railway lines for each operational route
+	// Then, separately load railway lines for each operational route with pivot data
 	for i := range operationalRoutes {
 		var railwayLines []models.RailwayLine
+		var pivotData []struct {
+			models.RailwayLine
+			OperationalRouteID uint `gorm:"column:operational_route_id"`
+			Sequence          *int `gorm:"column:sequence"`
+			IsReversed        *bool `gorm:"column:is_reversed"`
+		}
+		
 		err := h.db.Table("operational_route_railway_line").
-			Select("railway_lines.id, railway_lines.name, railway_lines.electrification, railway_lines.train_types_allowed, railway_lines.from_station_id, railway_lines.to_station_id, railway_lines.created_at, railway_lines.updated_at").
+			Select("railway_lines.*, operational_route_railway_line.operational_route_id, operational_route_railway_line.sequence, operational_route_railway_line.is_reversed").
 			Joins("JOIN railway_lines ON railway_lines.id = operational_route_railway_line.railway_line_id").
-			Preload("FromStation").
-			Preload("ToStation").
 			Where("operational_route_railway_line.operational_route_id = ?", operationalRoutes[i].ID).
-			Find(&railwayLines).Error
+			Find(&pivotData).Error
 		
 		if err != nil {
 			// Log the error but continue without railway lines
 			continue
+		}
+		
+		// Convert pivot data to railway lines with pivot info
+		railwayLines = make([]models.RailwayLine, len(pivotData))
+		for j, data := range pivotData {
+			railwayLines[j] = data.RailwayLine
+			railwayLines[j].Pivot = &models.OperationalRoutePivot{
+				OperationalRouteID: data.OperationalRouteID,
+				RailwayLineID: data.ID,
+				Sequence: data.Sequence,
+				IsReversed: data.IsReversed,
+			}
+		}
+		
+		// Load station relationships separately
+		for j := range railwayLines {
+			if railwayLines[j].FromStationID != nil {
+				h.db.First(&railwayLines[j].FromStation, *railwayLines[j].FromStationID)
+			}
+			if railwayLines[j].ToStationID != nil {
+				h.db.First(&railwayLines[j].ToStation, *railwayLines[j].ToStationID)
+			}
 		}
 		
 		operationalRoutes[i].RailwayLines = railwayLines
@@ -192,17 +219,43 @@ func (h *APIEndpointsHandler) GetOperationalRouteByID(c *gin.Context) {
 		return
 	}
 
-	// Separately load railway lines without geometry to avoid parsing issues
-	var railwayLines []models.RailwayLine
+	// Separately load railway lines with pivot data for full compatibility
+	var pivotData []struct {
+		models.RailwayLine
+		OperationalRouteID uint `gorm:"column:operational_route_id"`
+		Sequence          *int `gorm:"column:sequence"`
+		IsReversed        *bool `gorm:"column:is_reversed"`
+	}
+	
 	err = h.db.Table("operational_route_railway_line").
-		Select("railway_lines.id, railway_lines.name, railway_lines.electrification, railway_lines.train_types_allowed, railway_lines.from_station_id, railway_lines.to_station_id, railway_lines.created_at, railway_lines.updated_at").
+		Select("railway_lines.*, operational_route_railway_line.operational_route_id, operational_route_railway_line.sequence, operational_route_railway_line.is_reversed").
 		Joins("JOIN railway_lines ON railway_lines.id = operational_route_railway_line.railway_line_id").
-		Preload("FromStation").
-		Preload("ToStation").
 		Where("operational_route_railway_line.operational_route_id = ?", operationalRoute.ID).
-		Find(&railwayLines).Error
+		Find(&pivotData).Error
 	
 	if err == nil {
+		// Convert pivot data to railway lines with pivot info
+		railwayLines := make([]models.RailwayLine, len(pivotData))
+		for j, data := range pivotData {
+			railwayLines[j] = data.RailwayLine
+			railwayLines[j].Pivot = &models.OperationalRoutePivot{
+				OperationalRouteID: data.OperationalRouteID,
+				RailwayLineID: data.ID,
+				Sequence: data.Sequence,
+				IsReversed: data.IsReversed,
+			}
+		}
+		
+		// Load station relationships separately
+		for j := range railwayLines {
+			if railwayLines[j].FromStationID != nil {
+				h.db.First(&railwayLines[j].FromStation, *railwayLines[j].FromStationID)
+			}
+			if railwayLines[j].ToStationID != nil {
+				h.db.First(&railwayLines[j].ToStation, *railwayLines[j].ToStationID)
+			}
+		}
+		
 		operationalRoute.RailwayLines = railwayLines
 	}
 
