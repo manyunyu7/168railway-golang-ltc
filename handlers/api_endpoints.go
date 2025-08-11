@@ -67,11 +67,9 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 func (h *APIEndpointsHandler) GetOperationalRoutesPathway(c *gin.Context) {
 	var operationalRoutes []models.OperationalRoute
 	
+	// First, get operational routes without railway lines to avoid geometry parsing issues
 	result := h.db.Preload("StartStation").
 		Preload("EndStation").
-		Preload("RailwayLines").
-		Preload("RailwayLines.FromStation").
-		Preload("RailwayLines.ToStation").
 		Find(&operationalRoutes)
 		
 	if result.Error != nil {
@@ -80,6 +78,25 @@ func (h *APIEndpointsHandler) GetOperationalRoutesPathway(c *gin.Context) {
 			"detail": result.Error.Error(),
 		})
 		return
+	}
+
+	// Then, separately load railway lines for each operational route
+	for i := range operationalRoutes {
+		var railwayLines []models.RailwayLine
+		err := h.db.Table("operational_route_railway_line").
+			Select("railway_lines.id, railway_lines.name, railway_lines.electrification, railway_lines.train_types_allowed, railway_lines.from_station_id, railway_lines.to_station_id, railway_lines.created_at, railway_lines.updated_at").
+			Joins("JOIN railway_lines ON railway_lines.id = operational_route_railway_line.railway_line_id").
+			Preload("FromStation").
+			Preload("ToStation").
+			Where("operational_route_railway_line.operational_route_id = ?", operationalRoutes[i].ID).
+			Find(&railwayLines).Error
+		
+		if err != nil {
+			// Log the error but continue without railway lines
+			continue
+		}
+		
+		operationalRoutes[i].RailwayLines = railwayLines
 	}
 
 	c.JSON(http.StatusOK, operationalRoutes)
@@ -159,9 +176,6 @@ func (h *APIEndpointsHandler) GetOperationalRouteByID(c *gin.Context) {
 	var operationalRoute models.OperationalRoute
 	result := h.db.Preload("StartStation").
 		Preload("EndStation").
-		Preload("RailwayLines").
-		Preload("RailwayLines.FromStation").
-		Preload("RailwayLines.ToStation").
 		First(&operationalRoute, routeID)
 		
 	if result.Error != nil {
@@ -176,6 +190,20 @@ func (h *APIEndpointsHandler) GetOperationalRouteByID(c *gin.Context) {
 			})
 		}
 		return
+	}
+
+	// Separately load railway lines without geometry to avoid parsing issues
+	var railwayLines []models.RailwayLine
+	err = h.db.Table("operational_route_railway_line").
+		Select("railway_lines.id, railway_lines.name, railway_lines.electrification, railway_lines.train_types_allowed, railway_lines.from_station_id, railway_lines.to_station_id, railway_lines.created_at, railway_lines.updated_at").
+		Joins("JOIN railway_lines ON railway_lines.id = operational_route_railway_line.railway_line_id").
+		Preload("FromStation").
+		Preload("ToStation").
+		Where("operational_route_railway_line.operational_route_id = ?", operationalRoute.ID).
+		Find(&railwayLines).Error
+	
+	if err == nil {
+		operationalRoute.RailwayLines = railwayLines
 	}
 
 	c.JSON(http.StatusOK, operationalRoute)

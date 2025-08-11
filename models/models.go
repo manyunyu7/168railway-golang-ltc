@@ -1,6 +1,9 @@
 package models
 
 import (
+	"database/sql/driver"
+	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -250,7 +253,7 @@ func (OperationalRoute) TableName() string {
 type RailwayLine struct {
 	ID                 uint                 `json:"id" gorm:"primaryKey"`
 	Name               string               `json:"name"`
-	Geometry           *RailwayLineGeometry `json:"geometry,omitempty"`
+	Geometry           *RailwayLineGeometry `json:"geometry,omitempty" gorm:"type:json"`
 	Electrification    bool                 `json:"electrification" gorm:"default:false"`
 	TrainTypesAllowed  *string              `json:"train_types_allowed"`
 	FromStationID      *uint                `json:"from_station_id"`
@@ -270,4 +273,29 @@ func (RailwayLine) TableName() string {
 type RailwayLineGeometry struct {
 	Type        string          `json:"type"`
 	Coordinates [][]float64     `json:"coordinates"`
+}
+
+// Value implements the driver.Valuer interface for database storage
+func (g RailwayLineGeometry) Value() (driver.Value, error) {
+	return json.Marshal(g)
+}
+
+// Scan implements the sql.Scanner interface for database retrieval
+func (g *RailwayLineGeometry) Scan(value interface{}) error {
+	if value == nil {
+		*g = RailwayLineGeometry{}
+		return nil
+	}
+
+	var bytes []byte
+	switch v := value.(type) {
+	case []byte:
+		bytes = v
+	case string:
+		bytes = []byte(v)
+	default:
+		return errors.New("cannot scan non-string value into RailwayLineGeometry")
+	}
+
+	return json.Unmarshal(bytes, g)
 }
