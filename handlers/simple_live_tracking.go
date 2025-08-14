@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,13 +20,29 @@ import (
 type SimpleLiveTrackingHandler struct {
 	db *gorm.DB
 	s3 *utils.S3Client
+	trainMutexes map[string]*sync.Mutex // mutex per train to prevent race conditions
+	mutexLock    sync.RWMutex           // protect the trainMutexes map itself
+	trainsListMutex sync.Mutex          // dedicated mutex for trains-list.json updates
 }
 
 func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *SimpleLiveTrackingHandler {
 	return &SimpleLiveTrackingHandler{
 		db: db,
 		s3: s3Client,
+		trainMutexes: make(map[string]*sync.Mutex),
 	}
+}
+
+// getTrainMutex returns a mutex for the specific train to prevent race conditions
+func (h *SimpleLiveTrackingHandler) getTrainMutex(trainNumber string) *sync.Mutex {
+	h.mutexLock.Lock()
+	defer h.mutexLock.Unlock()
+	
+	if _, exists := h.trainMutexes[trainNumber]; !exists {
+		h.trainMutexes[trainNumber] = &sync.Mutex{}
+	}
+	
+	return h.trainMutexes[trainNumber]
 }
 
 // GetActiveTrainsList - Public API endpoint to serve active trains list (proxy for S3)
@@ -168,6 +185,14 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		return
 	}
 
+	// Start database transaction for consistency
+	tx := h.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
 	// Terminate any existing sessions for this user (like Laravel)
 	h.terminateUserSessions(user.ID)
 
@@ -175,32 +200,67 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 	now := time.Now()
 	fmt.Printf("DEBUG: Starting session %s for user %d, train %s\n", sessionID, user.ID, req.TrainNumber)
 
-	// Generate train file data
-	trainData := models.TrainData{
-		TrainID:         req.TrainNumber,
-		Route:           fmt.Sprintf("Route information for train %d", req.TrainID),
-		PassengerCount:  1,
-		AveragePosition: models.Position{Lat: req.InitialLat, Lng: req.InitialLng},
-		Passengers: []models.Passenger{
-			{
-				UserID:     user.ID,
-				UserType:   "authenticated", 
-				ClientType: "mobile",
-				Lat:        req.InitialLat,
-				Lng:        req.InitialLng,
-				Timestamp:  time.Now().UnixMilli(),
-				SessionID:  sessionID,
-				Status:     "active",
+	// Get train-specific mutex to prevent race conditions
+	trainMutex := h.getTrainMutex(req.TrainNumber)
+	trainMutex.Lock()
+	defer trainMutex.Unlock()
+
+	fileName := fmt.Sprintf("trains/train-%s.json", req.TrainNumber)
+	
+	// Check if train file already exists and has other passengers
+	existingTrainData, err := h.s3.GetTrainData(fileName)
+	var trainData models.TrainData
+	
+	if err != nil {
+		// New train file - create fresh data
+		fmt.Printf("DEBUG: Creating new train file for train %s\n", req.TrainNumber)
+		trainData = models.TrainData{
+			TrainID:         req.TrainNumber,
+			Route:           fmt.Sprintf("Route information for train %d", req.TrainID),
+			PassengerCount:  1,
+			AveragePosition: models.Position{Lat: req.InitialLat, Lng: req.InitialLng},
+			Passengers: []models.Passenger{
+				{
+					UserID:     user.ID,
+					UserType:   "authenticated", 
+					ClientType: "mobile",
+					Lat:        req.InitialLat,
+					Lng:        req.InitialLng,
+					Timestamp:  time.Now().UnixMilli(),
+					SessionID:  sessionID,
+					Status:     "active",
+				},
 			},
-		},
-		LastUpdate: time.Now().Format(time.RFC3339),
-		Status:     "active",
-		DataSource: "live-gps",
+			LastUpdate: time.Now().Format(time.RFC3339),
+			Status:     "active",
+			DataSource: "live-gps",
+		}
+	} else {
+		// Train file exists - add this user to existing passengers
+		fmt.Printf("DEBUG: Adding user to existing train %s with %d passengers\n", req.TrainNumber, len(existingTrainData.Passengers))
+		trainData = *existingTrainData
+		
+		// Add new passenger
+		newPassenger := models.Passenger{
+			UserID:     user.ID,
+			UserType:   "authenticated", 
+			ClientType: "mobile",
+			Lat:        req.InitialLat,
+			Lng:        req.InitialLng,
+			Timestamp:  time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			Status:     "active",
+		}
+		trainData.Passengers = append(trainData.Passengers, newPassenger)
+		
+		// Recalculate average position and passenger count
+		h.recalculateAveragePosition(&trainData)
+		trainData.LastUpdate = time.Now().Format(time.RFC3339)
 	}
 
-	// Upload to S3
-	fileName := fmt.Sprintf("trains/train-%s.json", req.TrainNumber)
+	// Upload to S3 with train-specific lock already acquired
 	if err := h.s3.UploadJSON(fileName, trainData); err != nil {
+		tx.Rollback()
 		fmt.Printf("ERROR: Failed to upload to S3: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -212,7 +272,7 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 
 	fmt.Printf("DEBUG: Session %s stored in S3 file %s\n", sessionID, fileName)
 
-	// Store session in database (replaces Laravel cache)
+	// Store session in database (only if S3 succeeded)
 	session := models.LiveTrackingSession{
 		SessionID:     sessionID,
 		UserID:        user.ID,
@@ -226,9 +286,26 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		Status:        "active",
 	}
 
-	if err := h.db.Create(&session).Error; err != nil {
+	if err := tx.Create(&session).Error; err != nil {
+		tx.Rollback()
 		fmt.Printf("ERROR: Failed to save session to database: %v\n", err)
-		// Continue anyway - S3 file was created successfully
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to save session to database",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Commit transaction only if everything succeeded
+	if err := tx.Commit().Error; err != nil {
+		fmt.Printf("ERROR: Failed to commit transaction: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to commit session",
+			"error":   err.Error(),
+		})
+		return
 	}
 
 	// Update trains list
@@ -273,11 +350,20 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 	fmt.Printf("DEBUG: User %d updating location for session %s: (%.6f, %.6f)\n", 
 		user.ID, req.SessionID, req.Latitude, req.Longitude)
 
+	// Start database transaction for consistency
+	tx := h.db.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
 	// Validate session in database (like Laravel cache)
 	var session models.LiveTrackingSession
-	result := h.db.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
+	result := tx.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
 	
 	if result.Error != nil {
+		tx.Rollback()
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
 			"message": "Invalid session",
@@ -285,12 +371,15 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		return
 	}
 
-	// Update heartbeat in database
-	h.db.Model(&session).Update("last_heartbeat", time.Now())
+	// Get train-specific mutex to prevent race conditions with other users on same train
+	trainMutex := h.getTrainMutex(session.TrainNumber)
+	trainMutex.Lock()
+	defer trainMutex.Unlock()
 
-	// Update location in S3 train file using session info
+	// Update location in S3 train file using session info (with mutex protection)
 	trainFile, err := h.updateLocationInTrainFile(session.FilePath, user.ID, req)
 	if err != nil {
+		tx.Rollback()
 		fmt.Printf("ERROR: Failed to update location in S3: %v\n", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -300,9 +389,32 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		return
 	}
 
+	// Update heartbeat in database only if S3 update succeeded
+	if err := tx.Model(&session).Update("last_heartbeat", time.Now()).Error; err != nil {
+		tx.Rollback()
+		fmt.Printf("ERROR: Failed to update heartbeat: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to update session heartbeat",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// Commit transaction only if everything succeeded
+	if err := tx.Commit().Error; err != nil {
+		fmt.Printf("ERROR: Failed to commit transaction: %v\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"message": "Failed to commit location update",
+			"error":   err.Error(),
+		})
+		return
+	}
+
 	if trainFile != "" {
 		fmt.Printf("DEBUG: Successfully updated location in S3 file: %s\n", trainFile)
-		// Update trains list after location update
+		// Update trains list after location update (with dedicated mutex)
 		h.updateTrainsList()
 	} else {
 		fmt.Printf("DEBUG: No active train file found for user %d\n", user.ID)
@@ -512,8 +624,12 @@ func (h *SimpleLiveTrackingHandler) terminateUserSessions(userID uint) {
 	}
 }
 
-// Helper function to update trains list
+// Helper function to update trains list (thread-safe)
 func (h *SimpleLiveTrackingHandler) updateTrainsList() {
+	// Use dedicated mutex to prevent race conditions when updating trains-list.json
+	h.trainsListMutex.Lock()
+	defer h.trainsListMutex.Unlock()
+	
 	fmt.Printf("DEBUG: Updating trains list from active sessions\n")
 	
 	now := time.Now()

@@ -8,33 +8,33 @@ This is a high-performance Golang replacement for Laravel live tracking API endp
 
 **Production URL**: https://go-ltc.trainradar35.com/
 
-**Current Implementation Status**: Simplified version without Redis/S3 dependencies for easier deployment. The production version uses database-only implementation with debug logging enabled.
+**Current Implementation Status**: Database + S3 implementation with Redis disabled for easier deployment. The production version uses S3 for train data storage with database session tracking and debug logging enabled.
 
 ## Core Architecture
 
 - **Framework**: Gin (HTTP router) with GORM (ORM)
 - **Database**: MySQL (shared with Laravel app)
 - **Cache**: ~~Redis for session management~~ (Currently disabled)
-- **Storage**: ~~S3-compatible storage (IDCloudHost) for train data files~~ (Currently disabled)
+- **Storage**: S3-compatible storage (IDCloudHost) for train data files
 - **Authentication**: Laravel Sanctum token validation (SHA256 hashing)
 
 ### Key Components
 
-- `cmd/main.go` - Application entry point, simplified implementation without Redis/S3
+- `cmd/main.go` - Application entry point, S3-enabled implementation without Redis
 - `config/config.go` - Environment configuration loading with godotenv
 - `middleware/auth.go` - Laravel Sanctum token authentication with debug logging
 - `handlers/simple_live_tracking.go` - Live tracking API endpoints (using `NewSimpleLiveTrackingHandler`)
 - `models/models.go` - Database models matching Laravel schema
-- `utils/s3.go` - S3 client (currently unused in production)
+- `utils/s3.go` - S3 client for train data storage
 
-### Data Flow (Current Simplified Implementation)
+### Data Flow (Current S3-Enabled Implementation)
 
 1. Mobile app gets Bearer token from `https://168railway.com/api/mobile/login` (Laravel)
 2. Mobile app calls Golang API with Bearer token
 3. Golang API validates token against shared `personal_access_tokens` table with debug logging
-4. ~~User creates tracking session stored in Redis cache~~ (Currently returns no active sessions)
-5. ~~Location updates stored as JSON files in S3~~ (Currently disabled)
-6. ~~Session termination saves trip data to `trips` table~~ (Simplified responses)
+4. User creates tracking session stored in database (replaces Redis cache)
+5. Location updates stored as JSON files in S3 with real-time updates
+6. Session termination saves trip data to `trips` table with complete GPS tracking history
 
 **Important**: The Golang API shares the same MySQL database with the Laravel application but doesn't make HTTP requests to 168railway.com.
 
@@ -77,16 +77,17 @@ curl https://go-ltc.trainradar35.com/health
 ```
 
 **Important Deployment Notes**:
-- **Environment Configuration**: The `.env` file must exist at `/var/www/go-ltc/.env` with correct database credentials (DB_USERNAME, DB_PASSWORD, DB_NAME, etc.)
+- **Environment Configuration**: The `.env` file must exist at `/var/www/go-ltc/.env` with correct database credentials (DB_USERNAME, DB_PASSWORD, DB_NAME, etc.) and S3 configuration (S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION, S3_BUCKET, S3_ENDPOINT)
 - **Service Management**: Always use systemd to manage the service (`sudo systemctl restart go-ltc`), NOT manual nohup commands
 - **Build Required**: Go is a compiled language - changes won't take effect until you rebuild with `go build` AND restart the service
 - **Check Logs**: If issues occur, check systemd logs with `sudo journalctl -u go-ltc -n 50`
 - **Silent Success**: When `go build` runs without output, it means the build succeeded (Go only shows errors, not success messages)
 
 **Common Issues**:
-- If service fails to start: Check `.env` file exists and has correct DB_USERNAME (not DB_USER)
+- If service fails to start: Check `.env` file exists and has correct DB_USERNAME (not DB_USER) and S3 configuration
 - If endpoints return 404: Ensure you've rebuilt the binary and restarted the service
 - Database connection errors: Verify `.env` has correct credentials matching the Laravel application's database
+- S3 "MissingRegion" errors: Ensure S3_REGION is set in `.env` file (e.g., S3_REGION=us-east-1)
 
 ### Docker
 ```bash
@@ -114,10 +115,10 @@ go test -cover ./...
 Configure environment variables:
 - Database credentials (must match Laravel app's MySQL)
 - ~~Redis connection details~~ (Currently unused)
-- ~~S3 storage configuration~~ (Currently unused)
+- S3 storage configuration (S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION, S3_BUCKET, S3_ENDPOINT)
 - Server port (default 8080)
 
-**Production Environment**: The live server at https://go-ltc.trainradar35.com/ is configured with the necessary database connections.
+**Production Environment**: The live server at https://go-ltc.trainradar35.com/ is configured with the necessary database connections and S3 storage.
 
 ## API Integration Details
 
@@ -131,15 +132,16 @@ Configure environment variables:
 - **Debug logging enabled** in production for troubleshooting
 - **No HTTP calls to Laravel**: Direct database validation only
 
-### Session Management (Currently Simplified)
-- ~~Redis keys: `live_session_{sessionID}` and `user_sessions_{userID}`~~ (Disabled)
-- ~~Session data includes train info, timestamps, S3 file paths~~ (Simplified)
-- API endpoints return basic responses without full session tracking
+### Session Management (Database-backed)
+- ~~Redis keys: `live_session_{sessionID}` and `user_sessions_{userID}`~~ (Replaced with database)
+- Session data stored in `live_tracking_sessions` table with train info, timestamps, S3 file paths
+- API endpoints provide full session tracking with S3 integration
 
-### S3 Train Data Structure (Currently Disabled)
-- ~~Files stored as `trains/train-{number}.json`~~ (Not implemented)
-- ~~Contains passenger array with GPS coordinates, timestamps~~ (Not implemented)
-- ~~Automatic cleanup when no passengers remain~~ (Not implemented)
+### S3 Train Data Structure
+- Files stored as `trains/train-{number}.json` with real-time passenger data
+- Contains passenger array with GPS coordinates, timestamps, and tracking details
+- Automatic cleanup when no passengers remain on the train
+- Active trains list maintained in `trains/trains-list.json`
 
 ## Database Schema Compatibility
 
@@ -150,8 +152,8 @@ Models are designed to match Laravel's database schema:
 
 ## Performance Considerations
 
-- ~~Redis caching for session lookups~~ (Currently disabled)
-- ~~Efficient S3 operations with proper error handling~~ (Currently disabled)
+- ~~Redis caching for session lookups~~ (Replaced with database sessions)
+- Efficient S3 operations with proper error handling for train data storage
 - GORM optimizations with proper indexing
 - Gin middleware for CORS and authentication
 - Database auto-migration disabled to avoid key length issues with existing Laravel tables
