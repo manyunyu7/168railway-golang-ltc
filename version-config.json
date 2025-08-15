@@ -1,8 +1,8 @@
 {
-  "current_version": "1.2.0",
-  "minimum_version": "1.1.0",
+  "current_version": "0.8.8",
+  "minimum_version": "0.8.0",
   "force_update": false,
-  "update_message": "A new version is available with bug fixes and improvements!",
-  "download_url": "https://github.com/manyunyu7/168railway-golang-ltc/releases",
-  "last_updated": "2025-08-08T10:00:00Z"
+  "update_message": "Your app is up to date! No new version available at this time.",
+  "download_url": "https://play.google.com/store/apps/details?id=com.168railway.app",
+  "last_updated": "2025-08-15T08:00:00Z"
 }
