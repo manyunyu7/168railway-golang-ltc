@@ -810,7 +810,7 @@
 	"variable": [
 		{
 			"key": "base_url",
-			"value": "http://localhost:8081",
+			"value": "https://go-ltc.trainradar35.com",
 			"type": "string",
 			"description": "Golang API base URL"
 		},
