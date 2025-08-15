@@ -45,30 +45,12 @@ func (h *SimpleLiveTrackingHandler) getTrainMutex(trainNumber string) *sync.Mute
 	return h.trainMutexes[trainNumber]
 }
 
-// GetActiveTrainsList - Public API endpoint to serve active trains list (proxy for S3)
+// GetActiveTrainsList - Public API endpoint to serve active trains list (database-driven)
 func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
-	fmt.Printf("DEBUG: Frontend requesting active trains list via API proxy\n")
+	fmt.Printf("DEBUG: Frontend requesting active trains list via database query\n")
 	
-	// Try to read trains-list.json from S3
-	trainsListData, err := h.s3.GetJSONData("trains/trains-list.json")
-	if err != nil {
-		fmt.Printf("DEBUG: trains-list.json not found, generating from active sessions\n")
-		// If file doesn't exist, generate it from active sessions
-		h.updateTrainsList()
-		
-		// Try again after generation
-		trainsListData, err = h.s3.GetJSONData("trains/trains-list.json")
-		if err != nil {
-			// Return empty response if still fails
-			c.JSON(http.StatusOK, gin.H{
-				"trains":      []interface{}{},
-				"total":       0,
-				"lastUpdated": time.Now().Format(time.RFC3339),
-				"source":      "golang-api-fallback",
-			})
-			return
-		}
-	}
+	// Generate trains list directly from database (real-time, no S3 dependency)
+	trainsListData := h.generateTrainsListFromDatabase()
 	
 	// Set proper CORS and cache headers
 	c.Header("Access-Control-Allow-Origin", "*")
@@ -90,7 +72,7 @@ func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
 		}
 	}
 	
-	fmt.Printf("DEBUG: Serving trains list with %v trains\n", trainsListData["total"])
+	fmt.Printf("DEBUG: Serving trains list with %v trains (database-driven)\n", trainsListData["total"])
 	c.JSON(http.StatusOK, trainsListData)
 }
 
@@ -308,8 +290,7 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		return
 	}
 
-	// Update trains list
-	h.updateTrainsList()
+	// Note: No longer maintaining trains-list.json - using database-driven approach
 
 	c.JSON(http.StatusOK, gin.H{
 		"success":    true,
@@ -414,8 +395,7 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 
 	if trainFile != "" {
 		fmt.Printf("DEBUG: Successfully updated location in S3 file: %s\n", trainFile)
-		// Update trains list after location update (with dedicated mutex)
-		h.updateTrainsList()
+		// Note: No longer maintaining trains-list.json - using database-driven approach
 	} else {
 		fmt.Printf("DEBUG: No active train file found for user %d\n", user.ID)
 	}
@@ -584,10 +564,9 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		UpdatedAt: time.Now(),
 	})
 
-	// Update trains list immediately after stopping session
-	h.updateTrainsList()
+	// Note: No longer maintaining trains-list.json - using database-driven approach
 	
-	fmt.Printf("DEBUG: User %d stopped session %s, trains list updated\n", user.ID, req.SessionID)
+	fmt.Printf("DEBUG: User %d stopped session %s\n", user.ID, req.SessionID)
 
 	response := gin.H{
 		"success":    true,
@@ -1213,4 +1192,91 @@ func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	
 	return R * c / 1000 // Return distance in kilometers
+}
+
+// generateTrainsListFromDatabase - Generate trains list from database without S3 dependency
+func (h *SimpleLiveTrackingHandler) generateTrainsListFromDatabase() map[string]interface{} {
+	now := time.Now()
+	var activeTrains []interface{}
+	
+	// Get all active sessions from database (real-time source of truth)
+	var sessions []models.LiveTrackingSession
+	h.db.Where("status = ?", "active").Find(&sessions)
+	
+	// Group sessions by train number
+	trainSessions := make(map[string][]models.LiveTrackingSession)
+	for _, session := range sessions {
+		// Only include recent sessions (within 5 minutes)
+		if time.Since(session.LastHeartbeat) <= 5*time.Minute {
+			trainSessions[session.TrainNumber] = append(trainSessions[session.TrainNumber], session)
+		}
+	}
+	
+	// Build trains list from active sessions with S3 data enhancement
+	for trainNumber, trainSessionList := range trainSessions {
+		if len(trainSessionList) == 0 {
+			continue
+		}
+		
+		// Try to get additional data from S3 train file (optional enhancement)
+		fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+		trainData, err := h.s3.GetTrainData(fileName)
+		
+		var avgPosition models.Position
+		var lastUpdate string
+		var passengerCount int
+		
+		if err == nil && trainData != nil {
+			// S3 data available - use rich data
+			avgPosition = trainData.AveragePosition
+			lastUpdate = trainData.LastUpdate
+			passengerCount = len(trainData.Passengers)
+		} else {
+			// S3 data missing - generate from database sessions
+			fmt.Printf("DEBUG: S3 data missing for train %s, using database fallback\n", trainNumber)
+			
+			// Calculate basic data from sessions
+			passengerCount = len(trainSessionList)
+			lastUpdate = now.Format(time.RFC3339)
+			
+			// Use last known position from most recent session (basic fallback)
+			if len(trainSessionList) > 0 {
+				// Sort by last heartbeat to get most recent
+				mostRecent := trainSessionList[0]
+				for _, session := range trainSessionList {
+					if session.LastHeartbeat.After(mostRecent.LastHeartbeat) {
+						mostRecent = session
+					}
+				}
+				// Note: Without S3, we don't have exact GPS coordinates
+				// This would need to be enhanced if GPS coordinates were stored in database
+				avgPosition = models.Position{Lat: 0, Lng: 0} // Placeholder
+			}
+		}
+		
+		// Only include trains with recent activity and passengers
+		if passengerCount > 0 {
+			activeTrains = append(activeTrains, map[string]interface{}{
+				"trainId":        trainNumber,
+				"passengerCount": passengerCount,
+				"lastUpdate":     lastUpdate,
+				"status":         "active",
+				"averagePosition": avgPosition,
+			})
+		}
+	}
+	
+	// Create trains list structure (same format as S3 version)
+	return map[string]interface{}{
+		"trains":      activeTrains,
+		"total":       len(activeTrains),
+		"lastUpdated": now.Format(time.RFC3339),
+		"source":      "database-driven-real-time",
+		"websocket_upgrade": map[string]interface{}{
+			"available": true,
+			"url":       "wss://go-ltc.trainradar35.com/ws/trains",
+			"benefits":  "Real-time updates, lower bandwidth, individual passenger positions",
+			"message_types": []string{"initial_data", "train_updates", "ping/pong"},
+		},
+	}
 }

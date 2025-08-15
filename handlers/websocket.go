@@ -107,12 +107,8 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 }
 
 func (h *WebSocketHandler) sendInitialData(conn *websocket.Conn) {
-	// Send current active trains list
-	trainsListData, err := h.s3.GetJSONData("trains/trains-list.json")
-	if err != nil {
-		log.Printf("Failed to get initial trains list: %v", err)
-		return
-	}
+	// Generate initial data from database (no S3 trains-list.json dependency)
+	trainsListData := h.generateInitialDataFromDatabase()
 
 	message := WebSocketMessage{
 		Type: "initial_data",
@@ -334,5 +330,54 @@ func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, 
 		Status:         "active",
 		Route:          fmt.Sprintf("Route for train %s", trainNumber),
 		DataSource:     "database-only-fallback",
+	}
+}
+
+// generateInitialDataFromDatabase - Generate WebSocket initial data from database
+func (h *WebSocketHandler) generateInitialDataFromDatabase() map[string]interface{} {
+	now := time.Now()
+	var activeTrains []interface{}
+	
+	// Get all active sessions from database
+	var sessions []models.LiveTrackingSession
+	result := h.db.Where("status = ?", "active").Find(&sessions)
+	if result.Error != nil {
+		log.Printf("WebSocket Initial: Failed to get active sessions: %v", result.Error)
+		return map[string]interface{}{
+			"trains":      []interface{}{},
+			"total":       0,
+			"lastUpdated": now.Format(time.RFC3339),
+			"source":      "database-driven-websocket-initial",
+		}
+	}
+	
+	// Group sessions by train number
+	trainSessions := make(map[string][]models.LiveTrackingSession)
+	for _, session := range sessions {
+		// Only include recent sessions (within 5 minutes)
+		if time.Since(session.LastHeartbeat) <= 5*time.Minute {
+			trainSessions[session.TrainNumber] = append(trainSessions[session.TrainNumber], session)
+		}
+	}
+	
+	// Build basic trains list (same logic as broadcastTrainUpdates but simplified)
+	for trainNumber, trainSessionList := range trainSessions {
+		if len(trainSessionList) == 0 {
+			continue
+		}
+		
+		activeTrains = append(activeTrains, map[string]interface{}{
+			"trainId":        trainNumber,
+			"passengerCount": len(trainSessionList),
+			"lastUpdate":     now.Format(time.RFC3339),
+			"status":         "active",
+		})
+	}
+	
+	return map[string]interface{}{
+		"trains":      activeTrains,
+		"total":       len(activeTrains),
+		"lastUpdated": now.Format(time.RFC3339),
+		"source":      "database-driven-websocket-initial",
 	}
 }
