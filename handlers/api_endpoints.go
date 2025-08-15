@@ -60,23 +60,34 @@ type ScheduleResponse struct {
 func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	var scheduleDetails []ScheduleResponse
 	
-	// Parse pagination parameters
-	page := 1
+	// Parse pagination parameters - only paginate if explicitly requested
+	var usePagination bool
+	var page, limit, offset int
+	
 	if pageStr := c.Query("page"); pageStr != "" {
 		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
 			page = p
+			usePagination = true
 		}
 	}
 	
-	limit := 1000 // Default limit
 	if limitStr := c.Query("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 5000 {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 50000 {
 			limit = l
+			usePagination = true
 		}
 	}
 	
-	// Calculate offset
-	offset := (page - 1) * limit
+	// Set defaults only if pagination is requested
+	if usePagination {
+		if page == 0 {
+			page = 1
+		}
+		if limit == 0 {
+			limit = 1000
+		}
+		offset = (page - 1) * limit
+	}
 	
 	// Build optimized query - select only needed fields
 	query := h.db.Table("schedule_details").
@@ -92,11 +103,13 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 				Where("station_id = ?", stationID))
 	}
 	
-	// Apply pagination and ordering
-	result := query.Order("train_id, stop_sequence").
-		Offset(offset).
-		Limit(limit).
-		Find(&scheduleDetails)
+	// Apply pagination and ordering only if requested
+	query = query.Order("train_id, stop_sequence")
+	if usePagination {
+		query = query.Offset(offset).Limit(limit)
+	}
+	
+	result := query.Find(&scheduleDetails)
 		
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -117,14 +130,16 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	}
 	countQuery.Count(&totalCount)
 	
-	// Calculate pagination metadata
-	totalPages := (totalCount + int64(limit) - 1) / int64(limit)
-	
-	// Add pagination and filter metadata to headers
+	// Add metadata headers
 	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
-	c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
-	c.Header("X-Current-Page", fmt.Sprintf("%d", page))
-	c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
+	
+	// Add pagination headers only if pagination is used
+	if usePagination {
+		totalPages := (totalCount + int64(limit) - 1) / int64(limit)
+		c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
+		c.Header("X-Current-Page", fmt.Sprintf("%d", page))
+		c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
+	}
 	
 	if stationID != "" {
 		// Get unique train count for this station
