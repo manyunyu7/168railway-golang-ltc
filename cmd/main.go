@@ -172,23 +172,48 @@ func main() {
 		api.GET("/operational-routes-pathway", apiEndpointsHandler.GetOperationalRoutesPathway)
 		api.GET("/operational-routes/:id", apiEndpointsHandler.GetOperationalRouteByID)
 		
-		// Version control endpoints
+		// Version control endpoints - platform-specific
 		api.GET("/app-version", func(c *gin.Context) {
+			platform := c.Query("platform") // ios or android
+			
 			versionConfig := utils.GetVersionConfig()
-			c.JSON(200, gin.H{
-				"current_version": versionConfig.CurrentVersion,
-				"minimum_version": versionConfig.MinimumVersion,
-				"force_update":    versionConfig.ForceUpdate,
-				"update_message":  versionConfig.UpdateMessage,
-				"download_url":    versionConfig.DownloadURL,
-				"last_updated":    versionConfig.LastUpdated,
-			})
+			
+			if platform != "" {
+				// Return platform-specific version
+				platformConfig, err := utils.GetPlatformConfig(platform)
+				if err != nil {
+					c.JSON(400, gin.H{
+						"success": false,
+						"error": "Invalid platform",
+						"message": "Supported platforms: ios, android",
+					})
+					return
+				}
+				
+				c.JSON(200, gin.H{
+					"platform":        platform,
+					"current_version": platformConfig.CurrentVersion,
+					"minimum_version": platformConfig.MinimumVersion,
+					"force_update":    platformConfig.ForceUpdate,
+					"update_message":  platformConfig.UpdateMessage,
+					"download_url":    platformConfig.DownloadURL,
+					"last_updated":    versionConfig.LastUpdated,
+				})
+			} else {
+				// Return both platforms
+				c.JSON(200, gin.H{
+					"ios":          versionConfig.IOS,
+					"android":      versionConfig.Android,
+					"last_updated": versionConfig.LastUpdated,
+				})
+			}
 		})
 		
 		// Version validation endpoint
 		api.POST("/check-version", func(c *gin.Context) {
 			var req struct {
-				Version string `json:"version" binding:"required"`
+				Version  string `json:"version" binding:"required"`
+				Platform string `json:"platform"` // ios, android (optional for backward compatibility)
 			}
 			
 			if err := c.ShouldBindJSON(&req); err != nil {
@@ -200,9 +225,24 @@ func main() {
 				return
 			}
 			
-			versionConfig := utils.GetVersionConfig()
-			currentVersion := versionConfig.CurrentVersion
-			minimumVersion := versionConfig.MinimumVersion
+			// Default to android if no platform specified (backward compatibility)
+			platform := req.Platform
+			if platform == "" {
+				platform = "android"
+			}
+			
+			platformConfig, err := utils.GetPlatformConfig(platform)
+			if err != nil {
+				c.JSON(400, gin.H{
+					"success": false,
+					"error": "Invalid platform",
+					"message": "Supported platforms: ios, android",
+				})
+				return
+			}
+			
+			currentVersion := platformConfig.CurrentVersion
+			minimumVersion := platformConfig.MinimumVersion
 			
 			// Simple version comparison (assumes semantic versioning)
 			isSupported := compareVersions(req.Version, minimumVersion) >= 0
@@ -212,6 +252,7 @@ func main() {
 				"success": true,
 				"supported": isSupported,
 				"is_latest": isLatest,
+				"platform": platform,
 				"client_version": req.Version,
 				"current_version": currentVersion,
 				"minimum_version": minimumVersion,
@@ -220,7 +261,7 @@ func main() {
 			if !isSupported {
 				response["force_update"] = true
 				response["message"] = "Your app version is no longer supported. Please update to continue using the service."
-				response["download_url"] = "https://github.com/manyunyu7/168railway-golang-ltc/releases"
+				response["download_url"] = platformConfig.DownloadURL
 				c.JSON(200, response)
 				return
 			}
@@ -249,11 +290,11 @@ func main() {
 			}
 			
 			c.JSON(200, gin.H{
-				"success":         true,
-				"message":         "Version configuration reloaded successfully",
-				"current_version": config.CurrentVersion,
-				"minimum_version": config.MinimumVersion,
-				"last_updated":    config.LastUpdated,
+				"success":      true,
+				"message":      "Version configuration reloaded successfully",
+				"ios":          config.IOS,
+				"android":      config.Android,
+				"last_updated": config.LastUpdated,
 			})
 		})
 		

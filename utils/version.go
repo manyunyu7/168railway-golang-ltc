@@ -8,13 +8,18 @@ import (
 	"time"
 )
 
-type VersionConfig struct {
+type PlatformVersionConfig struct {
 	CurrentVersion string `json:"current_version"`
 	MinimumVersion string `json:"minimum_version"`
 	ForceUpdate    bool   `json:"force_update"`
 	UpdateMessage  string `json:"update_message"`
 	DownloadURL    string `json:"download_url"`
-	LastUpdated    string `json:"last_updated"`
+}
+
+type VersionConfig struct {
+	IOS         PlatformVersionConfig `json:"ios"`
+	Android     PlatformVersionConfig `json:"android"`
+	LastUpdated string               `json:"last_updated"`
 }
 
 var (
@@ -28,12 +33,21 @@ func LoadVersionConfig() (*VersionConfig, error) {
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		// Create default config file
 		defaultConfig := &VersionConfig{
-			CurrentVersion: "1.2.0",
-			MinimumVersion: "1.1.0",
-			ForceUpdate:    false,
-			UpdateMessage:  "A new version is available with bug fixes and improvements!",
-			DownloadURL:    "https://github.com/manyunyu7/168railway-golang-ltc/releases",
-			LastUpdated:    time.Now().Format(time.RFC3339),
+			IOS: PlatformVersionConfig{
+				CurrentVersion: "0.8.8",
+				MinimumVersion: "0.8.0",
+				ForceUpdate:    false,
+				UpdateMessage:  "Your app is up to date! No new version available at this time.",
+				DownloadURL:    "https://apps.apple.com/app/168railway/id123456789",
+			},
+			Android: PlatformVersionConfig{
+				CurrentVersion: "0.8.8",
+				MinimumVersion: "0.8.0", 
+				ForceUpdate:    false,
+				UpdateMessage:  "Your app is up to date! No new version available at this time.",
+				DownloadURL:    "https://play.google.com/store/apps/details?id=com.168railway.app",
+			},
+			LastUpdated: time.Now().Format(time.RFC3339),
 		}
 		
 		if err := SaveVersionConfig(defaultConfig); err != nil {
@@ -83,17 +97,39 @@ func GetVersionConfig() *VersionConfig {
 		if err != nil {
 			// Return default config if loading fails
 			return &VersionConfig{
-				CurrentVersion: "1.2.0",
-				MinimumVersion: "1.1.0",
-				ForceUpdate:    false,
-				UpdateMessage:  "A new version is available with bug fixes and improvements!",
-				DownloadURL:    "https://github.com/manyunyu7/168railway-golang-ltc/releases",
-				LastUpdated:    time.Now().Format(time.RFC3339),
+				IOS: PlatformVersionConfig{
+					CurrentVersion: "0.8.8",
+					MinimumVersion: "0.8.0",
+					ForceUpdate:    false,
+					UpdateMessage:  "Your app is up to date! No new version available at this time.",
+					DownloadURL:    "https://apps.apple.com/app/168railway/id123456789",
+				},
+				Android: PlatformVersionConfig{
+					CurrentVersion: "0.8.8",
+					MinimumVersion: "0.8.0",
+					ForceUpdate:    false,
+					UpdateMessage:  "Your app is up to date! No new version available at this time.",
+					DownloadURL:    "https://play.google.com/store/apps/details?id=com.168railway.app",
+				},
+				LastUpdated: time.Now().Format(time.RFC3339),
 			}
 		}
 		return config
 	}
 	return versionConfig
+}
+
+// GetPlatformConfig returns version config for specific platform
+func GetPlatformConfig(platform string) (*PlatformVersionConfig, error) {
+	config := GetVersionConfig()
+	switch platform {
+	case "ios":
+		return &config.IOS, nil
+	case "android":
+		return &config.Android, nil
+	default:
+		return nil, fmt.Errorf("unsupported platform: %s", platform)
+	}
 }
 
 // ReloadVersionConfig forces reload of the version configuration from file
