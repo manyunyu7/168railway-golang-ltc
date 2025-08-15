@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -42,14 +43,26 @@ func (h *APIEndpointsHandler) GetStations(c *gin.Context) {
 
 // GetSchedules - GET /api/schedules
 // Returns all schedule details with train and station info, matching Laravel API structure
+// Supports filtering by station_id: /api/schedules?station_id=1
 func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	var scheduleDetails []models.ScheduleDetail
 	
-	result := h.db.Preload("Train").
+	// Build query with optional station_id filter
+	query := h.db.Preload("Train").
 		Preload("Station").
-		Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks").
-		Order("train_id, stop_sequence").
-		Find(&scheduleDetails)
+		Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks")
+	
+	// Check for station_id filter parameter
+	stationID := c.Query("station_id")
+	if stationID != "" {
+		// Filter by specific station - only return schedules for trains that pass through this station
+		query = query.Where("train_id IN (?)", 
+			h.db.Model(&models.ScheduleDetail{}).
+				Select("DISTINCT train_id").
+				Where("station_id = ?", stationID))
+	}
+	
+	result := query.Order("train_id, stop_sequence").Find(&scheduleDetails)
 		
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -59,7 +72,23 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, scheduleDetails)
+	// If filtering by station, add some metadata to response
+	response := scheduleDetails
+	if stationID != "" {
+		// Get unique train count for this station
+		var trainCount int64
+		h.db.Model(&models.ScheduleDetail{}).
+			Where("station_id = ?", stationID).
+			Distinct("train_id").
+			Count(&trainCount)
+			
+		// Add metadata header
+		c.Header("X-Station-Filter", stationID)
+		c.Header("X-Trains-Count", fmt.Sprintf("%d", trainCount))
+		c.Header("X-Schedules-Count", fmt.Sprintf("%d", len(scheduleDetails)))
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 // GetOperationalRoutesPathway - GET /api/operational-routes-pathway  

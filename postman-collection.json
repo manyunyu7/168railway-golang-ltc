@@ -448,6 +448,236 @@
 			"description": "Live tracking endpoints"
 		},
 		{
+			"name": "Schedules API", 
+			"item": [
+				{
+					"name": "Get All Schedules",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/schedules",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"schedules"
+							]
+						},
+						"description": "Get all train schedules with station and train details"
+					},
+					"response": [
+						{
+							"name": "Success Response",
+							"originalRequest": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Accept",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/api/schedules",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"schedules"
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								}
+							],
+							"cookie": [],
+							"body": "[\n  {\n    \"schedule_detail_id\": 1,\n    \"train_id\": 1,\n    \"station_id\": 1,\n    \"stop_sequence\": 1,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:09:59\",\n    \"is_pass_through\": false,\n    \"remarks\": null,\n    \"train\": {\n      \"train_id\": 1,\n      \"train_number\": \"KA 1\",\n      \"train_name\": \"Argo Bromo Anggrek\",\n      \"relation\": \"SBI-GMR\"\n    },\n    \"station\": {\n      \"station_id\": 1,\n      \"station_code\": \"SBI\",\n      \"station_name\": \"SURABAYA PASAR TURI\",\n      \"latitude\": -7.24817,\n      \"longitude\": 112.7312\n    }\n  }\n]"
+						}
+					]
+				},
+				{
+					"name": "Get Schedules by Station ID",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/schedules?station_id=1",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"schedules"
+							],
+							"query": [
+								{
+									"key": "station_id",
+									"value": "1",
+									"description": "Filter schedules for trains that pass through this station"
+								}
+							]
+						},
+						"description": "Get schedules for trains that pass through a specific station. Returns complete schedules (all stations) for trains that include the specified station in their route."
+					},
+					"response": [
+						{
+							"name": "Station ID 1 - Success",
+							"originalRequest": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Accept",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/api/schedules?station_id=1",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"schedules"
+									],
+									"query": [
+										{
+											"key": "station_id",
+											"value": "1"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								},
+								{
+									"key": "X-Station-Filter",
+									"value": "1"
+								},
+								{
+									"key": "X-Trains-Count",
+									"value": "1"
+								},
+								{
+									"key": "X-Schedules-Count",
+									"value": "114"
+								}
+							],
+							"cookie": [],
+							"body": "[\n  {\n    \"schedule_detail_id\": 1,\n    \"train_id\": 1,\n    \"station_id\": 1,\n    \"stop_sequence\": 1,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:09:59\",\n    \"is_pass_through\": false,\n    \"remarks\": null,\n    \"train\": {\n      \"train_id\": 1,\n      \"train_number\": \"KA 1\",\n      \"train_name\": \"Argo Bromo Anggrek\",\n      \"relation\": \"SBI-GMR\"\n    },\n    \"station\": {\n      \"station_id\": 1,\n      \"station_code\": \"SBI\",\n      \"station_name\": \"SURABAYA PASAR TURI\",\n      \"latitude\": -7.24817,\n      \"longitude\": 112.7312\n    }\n  },\n  {\n    \"schedule_detail_id\": 2,\n    \"train_id\": 1,\n    \"station_id\": 2,\n    \"stop_sequence\": 2,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:15:00\",\n    \"is_pass_through\": true,\n    \"remarks\": null,\n    \"train\": {\n      \"train_id\": 1,\n      \"train_number\": \"KA 1\",\n      \"train_name\": \"Argo Bromo Anggrek\",\n      \"relation\": \"SBI-GMR\"\n    },\n    \"station\": {\n      \"station_id\": 2,\n      \"station_code\": \"TES\",\n      \"station_name\": \"TANDES\",\n      \"latitude\": -7.25897,\n      \"longitude\": 112.687\n    }\n  }\n]"
+						}
+					]
+				},
+				{
+					"name": "Get Schedules by Station ID (Different Station)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Accept",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/schedules?station_id=35",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"schedules"
+							],
+							"query": [
+								{
+									"key": "station_id",
+									"value": "35",
+									"description": "Filter by Semarang Tawang station"
+								}
+							]
+						},
+						"description": "Example with a different station ID (Semarang Tawang - station_id: 35)"
+					},
+					"response": [
+						{
+							"name": "Station ID 35 - Success",
+							"originalRequest": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Accept",
+										"value": "application/json"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/api/schedules?station_id=35",
+									"host": [
+										"{{base_url}}"
+									],
+									"path": [
+										"api",
+										"schedules"
+									],
+									"query": [
+										{
+											"key": "station_id",
+											"value": "35"
+										}
+									]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"_postman_previewlanguage": "json",
+							"header": [
+								{
+									"key": "Content-Type",
+									"value": "application/json"
+								},
+								{
+									"key": "X-Station-Filter",
+									"value": "35"
+								},
+								{
+									"key": "X-Trains-Count",
+									"value": "1"
+								},
+								{
+									"key": "X-Schedules-Count",
+									"value": "114"
+								}
+							],
+							"cookie": [],
+							"body": "[\n  {\n    \"schedule_detail_id\": 35,\n    \"train_id\": 1,\n    \"station_id\": 35,\n    \"stop_sequence\": 35,\n    \"arrival_time\": \"12:02:00\",\n    \"departure_time\": \"12:04:59\",\n    \"is_pass_through\": false,\n    \"remarks\": \"// KA 2509 (KA 2509 =)\",\n    \"train\": {\n      \"train_id\": 1,\n      \"train_number\": \"KA 1\",\n      \"train_name\": \"Argo Bromo Anggrek\",\n      \"relation\": \"SBI-GMR\"\n    },\n    \"station\": {\n      \"station_id\": 35,\n      \"station_code\": \"SMT\",\n      \"station_name\": \"SEMARANG TAWANG BANK JATENG\",\n      \"latitude\": -6.96444,\n      \"longitude\": 110.42778\n    }\n  }\n]"
+						}
+					]
+				}
+			],
+			"description": "Train schedules API endpoints with station filtering"
+		},
+		{
 			"name": "Error Cases",
 			"item": [
 				{
