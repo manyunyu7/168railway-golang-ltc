@@ -474,7 +474,7 @@
 					},
 					"response": [
 						{
-							"name": "Success Response",
+							"name": "Success Response (Paginated)",
 							"originalRequest": {
 								"method": "GET",
 								"header": [
@@ -484,13 +484,19 @@
 									}
 								],
 								"url": {
-									"raw": "{{base_url}}/api/schedules",
+									"raw": "{{base_url}}/api/schedules?limit=100",
 									"host": [
 										"{{base_url}}"
 									],
 									"path": [
 										"api",
 										"schedules"
+									],
+									"query": [
+										{
+											"key": "limit",
+											"value": "100"
+										}
 									]
 								}
 							},
@@ -501,10 +507,30 @@
 								{
 									"key": "Content-Type",
 									"value": "application/json"
+								},
+								{
+									"key": "X-Total-Count",
+									"value": "46747"
+								},
+								{
+									"key": "X-Total-Pages",
+									"value": "468"
+								},
+								{
+									"key": "X-Current-Page",
+									"value": "1"
+								},
+								{
+									"key": "X-Per-Page",
+									"value": "100"
+								},
+								{
+									"key": "X-Records-Count",
+									"value": "100"
 								}
 							],
 							"cookie": [],
-							"body": "[\n  {\n    \"schedule_detail_id\": 1,\n    \"train_id\": 1,\n    \"station_id\": 1,\n    \"stop_sequence\": 1,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:09:59\",\n    \"is_pass_through\": false,\n    \"remarks\": null,\n    \"train\": {\n      \"train_id\": 1,\n      \"train_number\": \"KA 1\",\n      \"train_name\": \"Argo Bromo Anggrek\",\n      \"relation\": \"SBI-GMR\"\n    },\n    \"station\": {\n      \"station_id\": 1,\n      \"station_code\": \"SBI\",\n      \"station_name\": \"SURABAYA PASAR TURI\",\n      \"latitude\": -7.24817,\n      \"longitude\": 112.7312\n    }\n  }\n]"
+							"body": "[\n  {\n    \"schedule_detail_id\": 1,\n    \"train_id\": 1,\n    \"station_id\": 1,\n    \"stop_sequence\": 1,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:09:59\",\n    \"is_pass_through\": false,\n    \"remarks\": null\n  },\n  {\n    \"schedule_detail_id\": 2,\n    \"train_id\": 1,\n    \"station_id\": 2,\n    \"stop_sequence\": 2,\n    \"arrival_time\": null,\n    \"departure_time\": \"09:15:00\",\n    \"is_pass_through\": true,\n    \"remarks\": null\n  }\n]"
 						}
 					]
 				},

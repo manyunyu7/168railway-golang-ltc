@@ -41,15 +41,45 @@ func (h *APIEndpointsHandler) GetStations(c *gin.Context) {
 	c.JSON(http.StatusOK, stations)
 }
 
+// ScheduleResponse - Lightweight DTO for frontend consumption
+type ScheduleResponse struct {
+	ScheduleDetailID uint    `json:"schedule_detail_id"`
+	TrainID          uint    `json:"train_id"`
+	StationID        uint    `json:"station_id"`
+	StopSequence     int     `json:"stop_sequence"`
+	ArrivalTime      *string `json:"arrival_time"`
+	DepartureTime    *string `json:"departure_time"`
+	IsPassThrough    bool    `json:"is_pass_through"`
+	Remarks          *string `json:"remarks"`
+}
+
 // GetSchedules - GET /api/schedules
-// Returns all schedule details with train and station info, matching Laravel API structure
+// Returns lightweight schedule data without embedded objects, optimized for frontend
 // Supports filtering by station_id: /api/schedules?station_id=1
+// Supports pagination: /api/schedules?page=1&limit=100
 func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
-	var scheduleDetails []models.ScheduleDetail
+	var scheduleDetails []ScheduleResponse
 	
-	// Build query with optional station_id filter
-	query := h.db.Preload("Train").
-		Preload("Station").
+	// Parse pagination parameters
+	page := 1
+	if pageStr := c.Query("page"); pageStr != "" {
+		if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+			page = p
+		}
+	}
+	
+	limit := 1000 // Default limit
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 && l <= 5000 {
+			limit = l
+		}
+	}
+	
+	// Calculate offset
+	offset := (page - 1) * limit
+	
+	// Build optimized query - select only needed fields
+	query := h.db.Table("schedule_details").
 		Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks")
 	
 	// Check for station_id filter parameter
@@ -57,12 +87,16 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	if stationID != "" {
 		// Filter by specific station - only return schedules for trains that pass through this station
 		query = query.Where("train_id IN (?)", 
-			h.db.Model(&models.ScheduleDetail{}).
+			h.db.Table("schedule_details").
 				Select("DISTINCT train_id").
 				Where("station_id = ?", stationID))
 	}
 	
-	result := query.Order("train_id, stop_sequence").Find(&scheduleDetails)
+	// Apply pagination and ordering
+	result := query.Order("train_id, stop_sequence").
+		Offset(offset).
+		Limit(limit).
+		Find(&scheduleDetails)
 		
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -72,23 +106,41 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 		return
 	}
 
-	// If filtering by station, add some metadata to response
-	response := scheduleDetails
+	// Get total count for pagination metadata
+	var totalCount int64
+	countQuery := h.db.Table("schedule_details")
+	if stationID != "" {
+		countQuery = countQuery.Where("train_id IN (?)", 
+			h.db.Table("schedule_details").
+				Select("DISTINCT train_id").
+				Where("station_id = ?", stationID))
+	}
+	countQuery.Count(&totalCount)
+	
+	// Calculate pagination metadata
+	totalPages := (totalCount + int64(limit) - 1) / int64(limit)
+	
+	// Add pagination and filter metadata to headers
+	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
+	c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
+	c.Header("X-Current-Page", fmt.Sprintf("%d", page))
+	c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
+	
 	if stationID != "" {
 		// Get unique train count for this station
 		var trainCount int64
-		h.db.Model(&models.ScheduleDetail{}).
+		h.db.Table("schedule_details").
 			Where("station_id = ?", stationID).
 			Distinct("train_id").
 			Count(&trainCount)
 			
-		// Add metadata header
+		// Add filter metadata headers
 		c.Header("X-Station-Filter", stationID)
 		c.Header("X-Trains-Count", fmt.Sprintf("%d", trainCount))
-		c.Header("X-Schedules-Count", fmt.Sprintf("%d", len(scheduleDetails)))
 	}
+	c.Header("X-Records-Count", fmt.Sprintf("%d", len(scheduleDetails)))
 
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, scheduleDetails)
 }
 
 // GetOperationalRoutesPathway - GET /api/operational-routes-pathway  
