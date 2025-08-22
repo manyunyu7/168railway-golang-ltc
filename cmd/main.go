@@ -108,6 +108,8 @@ func main() {
 	wsHandler := handlers.NewWebSocketHandler(db, s3Client)
 	// Initialize API endpoints handler
 	apiEndpointsHandler := handlers.NewAPIEndpointsHandler(db)
+	// Initialize tile proxy handler for CartoDB tiles
+	tileProxyHandler := handlers.NewTileProxyHandler()
 
 	// Setup routes
 	r := gin.Default()
@@ -162,6 +164,11 @@ func main() {
 		// Public endpoints for train data (replace direct S3 access)
 		api.GET("/active-train-list", liveTrackingHandler.GetActiveTrainsList)
 		api.GET("/train/:trainNumber", liveTrackingHandler.GetTrainData)
+		
+		// Tile proxy endpoints for CartoDB maps (bypass blocking)
+		api.GET("/tiles/:style/:z/:x/:y", tileProxyHandler.ProxyCartoDB)
+		api.GET("/tiles/stats", tileProxyHandler.GetCacheStats)
+		api.GET("/tiles/health", tileProxyHandler.HealthCheck)
 		
 		// Public API endpoints matching Laravel railway API
 		api.GET("/stations", apiEndpointsHandler.GetStations)
