@@ -196,23 +196,37 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 	if err != nil {
 		// New train file - create fresh data
 		fmt.Printf("DEBUG: Creating new train file for train %s\n", req.TrainNumber)
+		
+		// Create passenger with username and station name
+		passenger := models.Passenger{
+			UserID:     user.ID,
+			UserType:   "authenticated", 
+			ClientType: "mobile",
+			Lat:        req.InitialLat,
+			Lng:        req.InitialLng,
+			Timestamp:  time.Now().UnixMilli(),
+			SessionID:  sessionID,
+			Status:     "active",
+		}
+		
+		// Add username and station name
+		if user.Username != nil {
+			passenger.Username = *user.Username
+		} else {
+			passenger.Username = user.Name
+		}
+		if user.StationName != nil {
+			passenger.StationName = *user.StationName
+		} else {
+			passenger.StationName = ""
+		}
+		
 		trainData = models.TrainData{
 			TrainID:         req.TrainNumber,
 			Route:           fmt.Sprintf("Route information for train %d", req.TrainID),
 			PassengerCount:  1,
 			AveragePosition: models.Position{Lat: req.InitialLat, Lng: req.InitialLng},
-			Passengers: []models.Passenger{
-				{
-					UserID:     user.ID,
-					UserType:   "authenticated", 
-					ClientType: "mobile",
-					Lat:        req.InitialLat,
-					Lng:        req.InitialLng,
-					Timestamp:  time.Now().UnixMilli(),
-					SessionID:  sessionID,
-					Status:     "active",
-				},
-			},
+			Passengers:      []models.Passenger{passenger},
 			LastUpdate: time.Now().Format(time.RFC3339),
 			Status:     "active",
 			DataSource: "live-gps",
@@ -233,6 +247,19 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 			SessionID:  sessionID,
 			Status:     "active",
 		}
+		
+		// Add username and station name
+		if user.Username != nil {
+			newPassenger.Username = *user.Username
+		} else {
+			newPassenger.Username = user.Name
+		}
+		if user.StationName != nil {
+			newPassenger.StationName = *user.StationName
+		} else {
+			newPassenger.StationName = ""
+		}
+		
 		trainData.Passengers = append(trainData.Passengers, newPassenger)
 		
 		// Recalculate average position and passenger count
@@ -717,7 +744,7 @@ func (h *SimpleLiveTrackingHandler) updateLocationInTrainFile(fileName string, u
 	userFound := false
 	for i := range trainData.Passengers {
 		if trainData.Passengers[i].UserID == userID {
-			// Update passenger location data
+			// Update passenger location data (preserving username and station name)
 			trainData.Passengers[i].Lat = req.Latitude
 			trainData.Passengers[i].Lng = req.Longitude
 			trainData.Passengers[i].Timestamp = time.Now().UnixMilli()
@@ -726,6 +753,7 @@ func (h *SimpleLiveTrackingHandler) updateLocationInTrainFile(fileName string, u
 			trainData.Passengers[i].Heading = req.Heading
 			trainData.Passengers[i].Altitude = req.Altitude
 			trainData.Passengers[i].Status = "active"
+			// Note: Username and StationName are preserved, not overwritten
 			userFound = true
 			break
 		}

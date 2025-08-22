@@ -183,6 +183,22 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 		log.Printf("WebSocket: Failed to get active sessions: %v", result.Error)
 		return
 	}
+	
+	// Fetch user data for all active sessions
+	userIDs := make([]uint, 0, len(sessions))
+	userMap := make(map[uint]models.User)
+	for _, session := range sessions {
+		userIDs = append(userIDs, session.UserID)
+	}
+	
+	if len(userIDs) > 0 {
+		var users []models.User
+		if err := h.db.Where("id IN ?", userIDs).Find(&users).Error; err == nil {
+			for _, user := range users {
+				userMap[user.ID] = user
+			}
+		}
+	}
 
 	if len(sessions) == 0 {
 		// No active sessions - send empty update
@@ -209,7 +225,7 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 		if err != nil {
 			// If S3 file doesn't exist but we have active sessions, create basic update from database
 			log.Printf("WebSocket: S3 file missing for train %s, creating from database", trainNumber)
-			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList)
+			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList, userMap)
 			if update != nil {
 				updates = append(updates, *update)
 			}
@@ -226,6 +242,21 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 					timeSinceHeartbeat := time.Now().Sub(session.LastHeartbeat)
 					if timeSinceHeartbeat <= 2*time.Minute { // 2 minutes tolerance
 						passenger.Status = "active"
+						
+						// Add username and station name from user data
+						if user, ok := userMap[session.UserID]; ok {
+							if user.Username != nil {
+								passenger.Username = *user.Username
+							} else {
+								passenger.Username = user.Name
+							}
+							if user.StationName != nil {
+								passenger.StationName = *user.StationName
+							} else {
+								passenger.StationName = ""
+							}
+						}
+						
 						activePassengers = append(activePassengers, passenger)
 					}
 					break
@@ -294,7 +325,7 @@ func (h *WebSocketHandler) broadcastToClients(message WebSocketMessage) {
 }
 
 // Helper method to create train update from database sessions when S3 file is missing
-func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, sessions []models.LiveTrackingSession) *TrainUpdate {
+func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, sessions []models.LiveTrackingSession, userMap map[uint]models.User) *TrainUpdate {
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -314,6 +345,21 @@ func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, 
 				Timestamp:  session.LastHeartbeat.UnixMilli(),
 				// Note: No GPS coordinates available without S3 file
 			}
+			
+			// Add username and station name from user data
+			if user, ok := userMap[session.UserID]; ok {
+				if user.Username != nil {
+					passenger.Username = *user.Username
+				} else {
+					passenger.Username = user.Name
+				}
+				if user.StationName != nil {
+					passenger.StationName = *user.StationName
+				} else {
+					passenger.StationName = ""
+				}
+			}
+			
 			passengers = append(passengers, passenger)
 		}
 	}
