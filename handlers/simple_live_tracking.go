@@ -156,12 +156,14 @@ func (h *SimpleLiveTrackingHandler) GetActiveSession(c *gin.Context) {
 			"train_number":      session.TrainNumber,
 			"train_id":          session.TrainID,
 			"started_at":        session.StartedAt.Format(time.RFC3339),
+			"session_status":    session.Status, // NEW: Include session status
 		})
 	} else {
 		// No active session
 		c.JSON(http.StatusOK, gin.H{
 			"success":           true,
 			"has_active_session": false,
+			"session_status":    "none", // NEW: Indicate no active session
 		})
 	}
 }
@@ -431,12 +433,12 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		fmt.Printf("DEBUG: User %d tried to update terminated/inactive session %s (status: %s)\n", 
 			user.ID, req.SessionID, session.Status)
 		
-		// Return 200 OK with EXACT same structure as successful update for backward compatibility
-		// Mobile apps won't break because they expect these exact fields
+		// Return response with session status so mobile app knows the session is terminated
 		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "Mobile location updated successfully", // Same message as normal success
-			"updated_file": "", // Empty string instead of actual file since we didn't update
+			"success": false, // Changed to false to indicate the update didn't actually happen
+			"message": "Session is no longer active", // Clear message about session status
+			"updated_file": "", // Empty string since we didn't update
+			"session_status": session.Status, // NEW: Mobile app can check this field
 		})
 		return
 	}
@@ -508,6 +510,7 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		"storage": func() string {
 			if h.redis != nil { return "redis" } else { return "s3" }
 		}(),
+		"session_status": "active", // NEW: Consistent session status for mobile apps
 	})
 }
 
@@ -537,9 +540,28 @@ func (h *SimpleLiveTrackingHandler) Heartbeat(c *gin.Context) {
 
 	fmt.Printf("DEBUG: User %d sent heartbeat for session %s\n", user.ID, req.SessionID)
 
+	// Check session status for heartbeat
+	var session models.LiveTrackingSession
+	result := h.db.Where("session_id = ? AND user_id = ?", req.SessionID, user.ID).First(&session)
+	
+	if result.Error != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "Session not found",
+			"session_status": "not_found",
+		})
+		return
+	}
+
+	// Update last heartbeat if session is active
+	if session.Status == "active" {
+		h.db.Model(&session).Update("last_heartbeat", time.Now())
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "Heartbeat received (Redis-free)",
+		"success": session.Status == "active",
+		"message": "Heartbeat received",
+		"session_status": session.Status, // NEW: Mobile app can check session status
 	})
 }
 

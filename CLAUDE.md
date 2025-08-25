@@ -223,8 +223,174 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
 All protected endpoints require `Authorization: Bearer {token}` header:
 
 - `GET /api/mobile/live-tracking/active-session` - Check if user has active tracking session
+  - Returns `session_status` field: `"active"`, `"terminated"`, `"inactive"`, or `"none"`
 - `POST /api/mobile/live-tracking/start` - Start new tracking session
 - `POST /api/mobile/live-tracking/update` - Update GPS location during tracking
-- `POST /api/mobile/live-tracking/heartbeat` - Send heartbeat to maintain session
+  - **New**: Returns `session_status` field to inform mobile apps of session state
+  - If session is terminated: `success: false`, `session_status: "terminated"`
+  - If session is active: `success: true`, `session_status: "active"`
+- `POST /api/mobile/live-tracking/heartbeat` - Send heartbeat to maintain session  
+  - **New**: Returns `session_status` field and updates heartbeat only for active sessions
+  - Returns `success: false` if session is terminated/inactive
 - `POST /api/mobile/live-tracking/recover` - Recover lost session
 - `POST /api/mobile/live-tracking/stop` - Stop tracking session
+
+#### Session Status Values
+Mobile apps can check the `session_status` field in API responses:
+- `"active"` - Session is running normally, GPS updates accepted
+- `"terminated"` - Session terminated by admin, GPS updates ignored
+- `"inactive"` - Session expired or stopped by user
+- `"none"` - No active session found for user
+- `"not_found"` - Session ID not found in database
+
+### Admin Interface Endpoints (Session-Based Authentication)
+**Web Interface:**
+- `GET /admin/login` - Admin login page (mobile-responsive, 168railway.com inspired design)
+- `POST /admin/login` - Handle admin login form submission  
+- `GET /admin/dashboard` - Main admin dashboard (real-time session monitoring)
+- `GET /admin/logout` - Admin logout and session cleanup
+
+**Admin API (requires admin session cookie):**
+- `GET /admin/api/sessions` - List live tracking sessions with filtering
+  - Parameters: `status=active|all|inactive|terminated`, `limit=25|50|100`
+- `POST /admin/api/sessions/terminate/{session_id}` - Terminate a user's active session
+  - Returns success/failure with detailed session information
+
+## Admin Interface 🔐
+
+The application includes a comprehensive web-based admin dashboard for monitoring and managing live tracking sessions.
+
+**Access URL**: https://go-ltc.trainradar35.com/admin/dashboard
+
+### Admin Authentication
+- **Login Page**: Simple, gradient-free design optimized for mobile devices
+- **Authentication**: Database-based admin session management (in-memory)
+- **Session Duration**: 24 hours with automatic expiration
+- **Access Control**: Only users with `role = 'admin'` in the database can log in
+
+### Admin Dashboard Features
+- **Mobile-Responsive Design**: Optimized for tablets and smartphones
+- **Real-time Statistics**: Active sessions, trains, users, and system status
+- **Live Session Monitoring**: View all active tracking sessions with user details
+- **Session Management**: Ability to terminate active sessions
+- **Auto-refresh**: Optional 5-second auto-refresh for real-time monitoring
+- **Modern UI**: Clean, professional interface with animations and status indicators
+
+### Admin Endpoints
+All admin endpoints require authentication via admin session cookie:
+
+#### Web Interface Routes
+- `GET /admin/login` - Admin login page (mobile-responsive, no gradients)
+- `POST /admin/login` - Handle admin login form submission
+- `GET /admin/dashboard` - Main admin dashboard (mobile-friendly)
+- `GET /admin/logout` - Admin logout and session cleanup
+
+#### Admin API Routes (Session-Based Authentication)
+- `GET /admin/api/sessions` - List tracking sessions with filtering
+  - Query parameters: `status` (active/all/inactive/terminated), `limit` (25/50/100)
+  - Returns formatted session data with user information
+- `POST /admin/api/sessions/terminate/{session_id}` - Terminate a specific session
+  - Requires confirmation before termination
+  - Updates session status to "terminated" in database
+
+### Admin Dashboard Interface
+The dashboard provides:
+- **Statistics Cards**: Real-time metrics with animated counters
+- **Session Table**: Comprehensive view of all tracking sessions
+- **Advanced Filters**: Status-based filtering and pagination
+- **User Information**: Displays usernames, station names, and avatars
+- **Train Details**: Shows train numbers and route information
+- **Action Controls**: Terminate sessions with confirmation dialogs
+- **System Health**: Live system status monitoring
+
+### Mobile Optimization
+The admin interface is fully responsive with:
+- **Tablet Layout**: Optimized for tablets (768px and below)
+- **Mobile Layout**: Mobile-friendly design (576px and below)
+- **Compact Tables**: Hidden columns on small screens for better usability  
+- **Touch-Friendly**: Large buttons and touch targets
+- **Adaptive Text**: Scalable fonts and spacing
+- **Notification System**: Mobile-optimized alert positioning
+
+### Admin Development Notes
+- **Session Storage**: Currently uses in-memory sessions (consider Redis for production scaling)
+- **Password Authentication**: Supports both Laravel bcrypt hashes and fallback passwords for development
+- **Debug Logging**: All admin actions are logged with timestamps and user info
+- **Security**: Secure session cookies with httpOnly flag
+- **Error Handling**: Comprehensive error messages and user feedback
+
+### Admin Testing
+Test admin login with curl:
+```bash
+# Test admin session API (requires valid admin session cookie)
+curl -b "admin_session=VALID_SESSION_ID" \
+     https://go-ltc.trainradar35.com/admin/api/sessions?status=active&limit=25
+```
+
+**Admin Credentials**: Use any user in the database with `role = 'admin'` to access the admin interface.
+
+## Recent Updates (2025-08-25) 🆕
+
+### Admin Interface Implementation
+- **New Web Admin Dashboard**: Complete administrative interface for managing live tracking sessions
+  - **URL**: `https://go-ltc.trainradar35.com/admin/dashboard`  
+  - **Mobile-Responsive Design**: Fully optimized for tablets and smartphones with Bootstrap 5.3.2
+  - **Modern Login Page**: Clean, professional design inspired by 168railway.com using Inter font
+  - **Real-time Monitoring**: Live session tracking with auto-refresh capability
+  - **Session Management**: Ability to terminate active user sessions with confirmation
+
+### Session Status API Enhancement
+- **New `session_status` Field**: All mobile API endpoints now return session status information
+  - **GPS Update Endpoint**: Returns `"terminated"` when admin terminates session
+  - **Heartbeat Endpoint**: Updates heartbeat only for active sessions, returns status
+  - **Active Session Check**: Includes current session status in response
+  
+### API Response Changes
+**Before (Silent Failure):**
+```json
+{
+  "success": true,
+  "message": "Mobile location updated successfully",
+  "updated_file": ""
+}
+```
+
+**After (Clear Status):**
+```json
+{
+  "success": false,
+  "message": "Session is no longer active", 
+  "updated_file": "",
+  "session_status": "terminated"
+}
+```
+
+### Admin Features
+- **Session Termination**: Admins can terminate user sessions with immediate effect
+- **Real-time Dashboard**: Live statistics and session monitoring
+- **Mobile-Friendly Interface**: Responsive design works on all devices
+- **User Management**: View user details, station names, and session history
+- **System Health Monitoring**: Live system status and health checks
+
+### Technical Improvements
+- **Enhanced Error Handling**: Better session state management and validation
+- **Improved Mobile UX**: Apps can now detect and handle terminated sessions gracefully
+- **Debug Logging**: Comprehensive logging for session termination and status changes
+- **Database-Driven**: All session management now uses database as single source of truth
+
+### Files Added/Modified
+- `handlers/web_admin.go` - Complete admin interface implementation
+- `handlers/admin.go` - Admin API endpoints
+- `middleware/admin.go` - Admin authentication middleware
+- `handlers/simple_live_tracking.go` - Enhanced with session status responses
+- `CLAUDE.md` - Updated documentation
+
+### Breaking Changes for Mobile Apps
+- **GPS Update Response**: Now returns `success: false` when session is terminated (previously `true`)
+- **New Required Field**: Mobile apps should check `session_status` field in all responses
+- **Heartbeat Changes**: Now validates session status and updates heartbeat conditionally
+
+### Deployment Notes
+- **Service Restart Required**: Changes require `go build` and `sudo systemctl restart go-ltc`
+- **Database Compatible**: No schema changes, uses existing `live_tracking_sessions` table
+- **Backward Compatible**: Existing mobile apps will continue to work but won't utilize new status features
