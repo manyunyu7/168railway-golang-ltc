@@ -71,8 +71,9 @@ type Position struct {
 
 type Passenger struct {
 	UserID      uint    `json:"userId"`
-	Username    string  `json:"username"`
-	StationName string  `json:"stationName"`
+	Name        string  `json:"name"`        // User's full name
+	Username    string  `json:"username"`    // User's username (if available)
+	StationName string  `json:"stationName"` // Station name from stations table lookup
 	UserType    string  `json:"userType"`
 	ClientType  string  `json:"clientType"`
 	Lat         float64 `json:"lat"`

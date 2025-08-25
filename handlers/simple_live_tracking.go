@@ -19,6 +19,13 @@ import (
 	"github.com/modernland/golang-live-tracking/utils"
 )
 
+// UserStationCache caches user details and station information
+type UserStationCache struct {
+	Name        string
+	Username    string
+	StationName string
+}
+
 type SimpleLiveTrackingHandler struct {
 	db *gorm.DB
 	s3 *utils.S3Client
@@ -29,6 +36,9 @@ type SimpleLiveTrackingHandler struct {
 	trainsListCache map[string]interface{} // in-memory cache for trains list
 	trainsListCacheMutex sync.RWMutex       // protect trains list cache
 	lastCacheUpdate time.Time               // when cache was last updated
+	// Cache for user and station data (key: userID)
+	userCache map[uint]*UserStationCache
+	userCacheMutex sync.RWMutex
 }
 
 func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *SimpleLiveTrackingHandler {
@@ -37,6 +47,7 @@ func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *Simple
 		s3: s3Client,
 		trainMutexes: make(map[string]*sync.Mutex),
 		trainsListCache: make(map[string]interface{}),
+		userCache: make(map[uint]*UserStationCache),
 	}
 }
 
@@ -50,6 +61,53 @@ func (h *SimpleLiveTrackingHandler) SetRedisClient(redisClient *redis.Client) {
 	
 	// Start Redis to S3 sync process (every 88 seconds)
 	go h.startRedisSyncToS3()
+}
+
+// getUserWithStation gets user data with station lookup, using cache for efficiency
+func (h *SimpleLiveTrackingHandler) getUserWithStation(userID uint) *UserStationCache {
+	// Check cache first
+	h.userCacheMutex.RLock()
+	if cached, exists := h.userCache[userID]; exists {
+		h.userCacheMutex.RUnlock()
+		return cached
+	}
+	h.userCacheMutex.RUnlock()
+
+	// Not in cache, fetch from database
+	var user models.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		return nil
+	}
+
+	userCache := &UserStationCache{
+		Name: user.Name,
+	}
+
+	// Set username (prioritize username over name for username field)
+	if user.Username != nil {
+		userCache.Username = *user.Username
+	} else {
+		userCache.Username = user.Name
+	}
+
+	// Lookup station name from stations table using station_id
+	if user.StationID != nil {
+		var station models.Station
+		if err := h.db.First(&station, *user.StationID).Error; err == nil {
+			userCache.StationName = station.StationName
+		} else {
+			userCache.StationName = "Unknown Station"
+		}
+	} else {
+		userCache.StationName = "No Station"
+	}
+
+	// Cache the result
+	h.userCacheMutex.Lock()
+	h.userCache[userID] = userCache
+	h.userCacheMutex.Unlock()
+
+	return userCache
 }
 
 // getTrainMutex returns a mutex for the specific train to prevent race conditions
@@ -236,16 +294,11 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 			Status:     "active",
 		}
 		
-		// Add username and station name
-		if user.Username != nil {
-			passenger.Username = *user.Username
-		} else {
-			passenger.Username = user.Name
-		}
-		if user.StationName != nil {
-			passenger.StationName = *user.StationName
-		} else {
-			passenger.StationName = ""
+		// Add user details with cached station lookup
+		if userCache := h.getUserWithStation(user.ID); userCache != nil {
+			passenger.Name = userCache.Name
+			passenger.Username = userCache.Username
+			passenger.StationName = userCache.StationName
 		}
 		
 		trainData = models.TrainData{
@@ -296,8 +349,22 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 
 	// Store GPS position in Redis for real-time tracking (with S3 fallback)
 	if h.redis != nil {
-		// Store in Redis for real-time performance
-		if err := h.storeGPSInRedis(sessionID, user.ID, req.TrainNumber, req.InitialLat, req.InitialLng, user); err != nil {
+		// Store in Redis for real-time performance - create minimal GPS request for initial position
+		initialGPS := struct {
+			SessionID string   `json:"session_id" binding:"required"`
+			Latitude  float64  `json:"latitude" binding:"required,min=-90,max=90"`
+			Longitude float64  `json:"longitude" binding:"required,min=-180,max=180"`
+			Accuracy  *float64 `json:"accuracy,omitempty"`
+			Speed     *float64 `json:"speed,omitempty"`
+			Heading   *float64 `json:"heading,omitempty"`
+			Altitude  *float64 `json:"altitude,omitempty"`
+		}{
+			SessionID: sessionID,
+			Latitude:  req.InitialLat,
+			Longitude: req.InitialLng,
+			// Initial position has no speed data
+		}
+		if err := h.storeGPSInRedis(sessionID, user.ID, req.TrainNumber, initialGPS, user); err != nil {
 			fmt.Printf("WARNING: Failed to store GPS in Redis, falling back to S3: %v\n", err)
 			// Fallback to S3 if Redis fails
 			if err := h.s3.UploadJSON(fileName, trainData); err != nil {
@@ -451,8 +518,8 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 	// Update location in Redis for real-time tracking (with S3 fallback)
 	var updateError error
 	if h.redis != nil {
-		// Update GPS position in Redis (primary, fast)
-		if err := h.storeGPSInRedis(session.SessionID, user.ID, session.TrainNumber, req.Latitude, req.Longitude, user); err != nil {
+		// Update GPS position in Redis (primary, fast) - include all GPS metadata
+		if err := h.storeGPSInRedis(session.SessionID, user.ID, session.TrainNumber, req, user); err != nil {
 			fmt.Printf("WARNING: Failed to update GPS in Redis, falling back to S3: %v\n", err)
 			// Fallback to S3 if Redis fails
 			_, updateError = h.updateLocationInTrainFile(session.FilePath, user.ID, req)
@@ -629,16 +696,22 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		return
 	}
 
-	// Validate session in database
+	// Validate session in database - allow both active and terminated sessions for trip saving
 	var session models.LiveTrackingSession
-	result := h.db.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
+	result := h.db.Where("session_id = ? AND user_id = ? AND status IN ?", req.SessionID, user.ID, []string{"active", "terminated"}).First(&session)
 	
 	if result.Error != nil {
 		c.JSON(http.StatusForbidden, gin.H{
 			"success": false,
-			"message": "Invalid session",
+			"message": "Invalid session or session not found",
 		})
 		return
+	}
+	
+	// Check if session was terminated by admin
+	wasTerminatedByAdmin := session.Status == "terminated"
+	if wasTerminatedByAdmin {
+		fmt.Printf("DEBUG: User %d attempting to save trip for admin-terminated session %s\n", user.ID, req.SessionID)
 	}
 
 	fmt.Printf("DEBUG: User %d stopping session %s\n", user.ID, req.SessionID)
@@ -718,9 +791,15 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		}
 	}
 
-	// Mark session as completed in database
+	// Mark session as completed in database (keep terminated status if it was terminated by admin)
+	finalStatus := "completed"
+	if wasTerminatedByAdmin {
+		finalStatus = "terminated_with_trip_saved"
+		fmt.Printf("DEBUG: Session %s terminated by admin, but trip was saved by user\n", req.SessionID)
+	}
+	
 	h.db.Model(&session).Updates(models.LiveTrackingSession{
-		Status:    "completed",
+		Status:    finalStatus,
 		UpdatedAt: time.Now(),
 	})
 
@@ -732,6 +811,8 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		"success":    true,
 		"message":    "Mobile tracking session stopped successfully",
 		"trip_saved": tripSaved,
+		"session_status": finalStatus,
+		"was_terminated_by_admin": wasTerminatedByAdmin,
 	}
 	
 	if tripID != nil {
@@ -1486,31 +1567,50 @@ func (h *SimpleLiveTrackingHandler) syncRedisToS3() {
 // Redis GPS Helper Methods
 
 // storeGPSInRedis stores user's GPS position in Redis for real-time tracking
-func (h *SimpleLiveTrackingHandler) storeGPSInRedis(sessionID string, userID uint, trainNumber string, lat, lng float64, user *models.User) error {
+func (h *SimpleLiveTrackingHandler) storeGPSInRedis(sessionID string, userID uint, trainNumber string, req struct {
+	SessionID string   `json:"session_id" binding:"required"`
+	Latitude  float64  `json:"latitude" binding:"required,min=-90,max=90"`
+	Longitude float64  `json:"longitude" binding:"required,min=-180,max=180"`
+	Accuracy  *float64 `json:"accuracy,omitempty"`
+	Speed     *float64 `json:"speed,omitempty"`
+	Heading   *float64 `json:"heading,omitempty"`
+	Altitude  *float64 `json:"altitude,omitempty"`
+}, user *models.User) error {
 	if h.redis == nil {
 		return fmt.Errorf("Redis not available")
 	}
 	
 	ctx := context.Background()
 	
-	// Store individual session data
+	// Store individual session data with all GPS metadata
 	sessionData := map[string]interface{}{
 		"user_id":      userID,
 		"train_number": trainNumber,
-		"lat":          lat,
-		"lng":          lng,
+		"lat":          req.Latitude,
+		"lng":          req.Longitude,
 		"timestamp":    time.Now().UnixMilli(),
 		"status":       "active",
 	}
 	
-	// Add username and station name
-	if user.Username != nil {
-		sessionData["username"] = *user.Username
-	} else {
-		sessionData["username"] = user.Name
+	// Include optional GPS metadata if provided
+	if req.Accuracy != nil {
+		sessionData["accuracy"] = *req.Accuracy
 	}
-	if user.StationName != nil {
-		sessionData["station_name"] = *user.StationName
+	if req.Speed != nil {
+		sessionData["speed"] = *req.Speed
+	}
+	if req.Heading != nil {
+		sessionData["heading"] = *req.Heading
+	}
+	if req.Altitude != nil {
+		sessionData["altitude"] = *req.Altitude
+	}
+	
+	// Add user details with cached station lookup
+	if userCache := h.getUserWithStation(userID); userCache != nil {
+		sessionData["name"] = userCache.Name
+		sessionData["username"] = userCache.Username
+		sessionData["station_name"] = userCache.StationName
 	}
 	
 	sessionJSON, err := json.Marshal(sessionData)
@@ -1570,6 +1670,7 @@ func (h *SimpleLiveTrackingHandler) updateTrainDataInRedis(trainNumber string) e
 		lat, _ := sessionData["lat"].(float64)
 		lng, _ := sessionData["lng"].(float64)
 		timestamp, _ := sessionData["timestamp"].(float64)
+		name, _ := sessionData["name"].(string)
 		username, _ := sessionData["username"].(string)
 		stationName, _ := sessionData["station_name"].(string)
 		
@@ -1582,8 +1683,31 @@ func (h *SimpleLiveTrackingHandler) updateTrainDataInRedis(trainNumber string) e
 			Timestamp:   int64(timestamp),
 			SessionID:   session.SessionID,
 			Status:      "active",
+			Name:        name,
 			Username:    username,
 			StationName: stationName,
+		}
+		
+		// Add optional GPS metadata if available in Redis
+		if accuracy, exists := sessionData["accuracy"]; exists {
+			if val, ok := accuracy.(float64); ok {
+				passenger.Accuracy = &val
+			}
+		}
+		if speed, exists := sessionData["speed"]; exists {
+			if val, ok := speed.(float64); ok {
+				passenger.Speed = &val
+			}
+		}
+		if heading, exists := sessionData["heading"]; exists {
+			if val, ok := heading.(float64); ok {
+				passenger.Heading = &val
+			}
+		}
+		if altitude, exists := sessionData["altitude"]; exists {
+			if val, ok := altitude.(float64); ok {
+				passenger.Altitude = &val
+			}
 		}
 		
 		passengers = append(passengers, passenger)

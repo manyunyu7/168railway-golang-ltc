@@ -43,19 +43,25 @@ type TrainUpdate struct {
 	DataSource      string                 `json:"dataSource"`
 }
 
+// UserStationCache is defined in simple_live_tracking.go
+
 type WebSocketHandler struct {
 	db     *gorm.DB
 	s3     *utils.S3Client
 	redis  *redis.Client // Redis client for real-time data
 	clients map[*websocket.Conn]bool
 	mutex   sync.RWMutex
+	// Cache for user and station data (key: userID)
+	userCache map[uint]*UserStationCache
+	cacheMutex sync.RWMutex
 }
 
 func NewWebSocketHandler(db *gorm.DB, s3Client *utils.S3Client) *WebSocketHandler {
 	handler := &WebSocketHandler{
-		db:      db,
-		s3:      s3Client,
-		clients: make(map[*websocket.Conn]bool),
+		db:        db,
+		s3:        s3Client,
+		clients:   make(map[*websocket.Conn]bool),
+		userCache: make(map[uint]*UserStationCache),
 	}
 	
 	// Start background goroutine to broadcast updates
@@ -68,6 +74,53 @@ func NewWebSocketHandler(db *gorm.DB, s3Client *utils.S3Client) *WebSocketHandle
 func (h *WebSocketHandler) SetRedisClient(redisClient *redis.Client) {
 	h.redis = redisClient
 	fmt.Printf("INFO: Redis client enabled for WebSocket handler (real-time updates)\n")
+}
+
+// getUserWithStation gets user data with station lookup, using cache for efficiency
+func (h *WebSocketHandler) getUserWithStation(userID uint) *UserStationCache {
+	// Check cache first
+	h.cacheMutex.RLock()
+	if cached, exists := h.userCache[userID]; exists {
+		h.cacheMutex.RUnlock()
+		return cached
+	}
+	h.cacheMutex.RUnlock()
+
+	// Not in cache, fetch from database
+	var user models.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		return nil
+	}
+
+	userCache := &UserStationCache{
+		Name: user.Name,
+	}
+
+	// Set username (prioritize username over name for username field)
+	if user.Username != nil {
+		userCache.Username = *user.Username
+	} else {
+		userCache.Username = user.Name
+	}
+
+	// Lookup station name from stations table using station_id
+	if user.StationID != nil {
+		var station models.Station
+		if err := h.db.First(&station, *user.StationID).Error; err == nil {
+			userCache.StationName = station.StationName
+		} else {
+			userCache.StationName = "Unknown Station"
+		}
+	} else {
+		userCache.StationName = "No Station"
+	}
+
+	// Cache the result
+	h.cacheMutex.Lock()
+	h.userCache[userID] = userCache
+	h.cacheMutex.Unlock()
+
+	return userCache
 }
 
 // getTrainDataFromRedis gets train data from Redis with S3 failover for WebSocket
@@ -215,21 +268,8 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 		return
 	}
 	
-	// Fetch user data for all active sessions
-	userIDs := make([]uint, 0, len(sessions))
-	userMap := make(map[uint]models.User)
-	for _, session := range sessions {
-		userIDs = append(userIDs, session.UserID)
-	}
-	
-	if len(userIDs) > 0 {
-		var users []models.User
-		if err := h.db.Where("id IN ?", userIDs).Find(&users).Error; err == nil {
-			for _, user := range users {
-				userMap[user.ID] = user
-			}
-		}
-	}
+	// Pre-populate cache for all active users (efficient batch operation when needed)
+	// The getUserWithStation method will handle caching automatically
 
 	if len(sessions) == 0 {
 		// No active sessions - send empty update
@@ -259,7 +299,7 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 			} else {
 				log.Printf("WebSocket: S3 file missing for train %s, creating from database", trainNumber)
 			}
-			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList, userMap)
+			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList)
 			if update != nil {
 				updates = append(updates, *update)
 			}
@@ -277,18 +317,11 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 					if timeSinceHeartbeat <= 2*time.Minute { // 2 minutes tolerance
 						passenger.Status = "active"
 						
-						// Add username and station name from user data
-						if user, ok := userMap[session.UserID]; ok {
-							if user.Username != nil {
-								passenger.Username = *user.Username
-							} else {
-								passenger.Username = user.Name
-							}
-							if user.StationName != nil {
-								passenger.StationName = *user.StationName
-							} else {
-								passenger.StationName = ""
-							}
+						// Add user details with cached station lookup
+						if userCache := h.getUserWithStation(session.UserID); userCache != nil {
+							passenger.Name = userCache.Name
+							passenger.Username = userCache.Username
+							passenger.StationName = userCache.StationName
 						}
 						
 						activePassengers = append(activePassengers, passenger)
@@ -377,7 +410,7 @@ func (h *WebSocketHandler) broadcastToClients(message WebSocketMessage) {
 }
 
 // Helper method to create train update from database sessions when S3 file is missing
-func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, sessions []models.LiveTrackingSession, userMap map[uint]models.User) *TrainUpdate {
+func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, sessions []models.LiveTrackingSession) *TrainUpdate {
 	if len(sessions) == 0 {
 		return nil
 	}
@@ -398,18 +431,11 @@ func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, 
 				// Note: No GPS coordinates available without S3 file
 			}
 			
-			// Add username and station name from user data
-			if user, ok := userMap[session.UserID]; ok {
-				if user.Username != nil {
-					passenger.Username = *user.Username
-				} else {
-					passenger.Username = user.Name
-				}
-				if user.StationName != nil {
-					passenger.StationName = *user.StationName
-				} else {
-					passenger.StationName = ""
-				}
+			// Add user details with cached station lookup
+			if userCache := h.getUserWithStation(session.UserID); userCache != nil {
+				passenger.Name = userCache.Name
+				passenger.Username = userCache.Username
+				passenger.StationName = userCache.StationName
 			}
 			
 			passengers = append(passengers, passenger)
