@@ -213,8 +213,8 @@ curl -H "Authorization: Bearer YOUR_LARAVEL_SANCTUM_TOKEN" \
 **WebSocket Message Types:**
 - `initial_data` - Full trains list on connection
 - `train_updates` - Real-time updates with complete train data including:
-  - Individual passenger locations and timestamps  
-  - Average train position
+  - Individual passenger locations, timestamps, and speed data
+  - Average train position and speed
   - Passenger count and status
   - Route information and data source
 - `ping/pong` - Connection health checking
@@ -234,11 +234,16 @@ All protected endpoints require `Authorization: Bearer {token}` header:
   - Returns `success: false` if session is terminated/inactive
 - `POST /api/mobile/live-tracking/recover` - Recover lost session
 - `POST /api/mobile/live-tracking/stop` - Stop tracking session
+  - **New**: Users can save their journey even after admin termination
+  - Returns `was_terminated_by_admin: true` if session was terminated by admin
+  - Session status becomes `"terminated_with_trip_saved"` when trip is saved after termination
 
 #### Session Status Values
 Mobile apps can check the `session_status` field in API responses:
 - `"active"` - Session is running normally, GPS updates accepted
 - `"terminated"` - Session terminated by admin, GPS updates ignored
+- `"terminated_with_trip_saved"` - Session terminated by admin, but user saved their trip ✅
+- `"completed"` - Session stopped normally by user
 - `"inactive"` - Session expired or stopped by user
 - `"none"` - No active session found for user
 - `"not_found"` - Session ID not found in database
@@ -377,6 +382,7 @@ curl -b "admin_session=VALID_SESSION_ID" \
 - **Improved Mobile UX**: Apps can now detect and handle terminated sessions gracefully
 - **Debug Logging**: Comprehensive logging for session termination and status changes
 - **Database-Driven**: All session management now uses database as single source of truth
+- **WebSocket Speed Data**: Added average speed calculation and individual passenger speed preservation
 
 ### Files Added/Modified
 - `handlers/web_admin.go` - Complete admin interface implementation
@@ -385,10 +391,17 @@ curl -b "admin_session=VALID_SESSION_ID" \
 - `handlers/simple_live_tracking.go` - Enhanced with session status responses
 - `CLAUDE.md` - Updated documentation
 
+### Trip Saving After Admin Termination ✅
+- **Important**: Users can still save their journey even if admin terminates their session
+- **Stop Session Endpoint**: Now accepts both `"active"` and `"terminated"` sessions for trip saving
+- **Special Status**: Sessions become `"terminated_with_trip_saved"` when user saves after termination
+- **Response Fields**: `was_terminated_by_admin: true` indicates admin termination
+
 ### Breaking Changes for Mobile Apps
 - **GPS Update Response**: Now returns `success: false` when session is terminated (previously `true`)
 - **New Required Field**: Mobile apps should check `session_status` field in all responses
 - **Heartbeat Changes**: Now validates session status and updates heartbeat conditionally
+- **Trip Saving**: Users can now save trips after admin termination (NEW feature)
 
 ### Deployment Notes
 - **Service Restart Required**: Changes require `go build` and `sudo systemctl restart go-ltc`

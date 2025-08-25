@@ -35,6 +35,7 @@ type TrainUpdate struct {
 	TrainNumber     string                 `json:"trainNumber"`
 	PassengerCount  int                    `json:"passengerCount"`
 	AveragePosition models.Position        `json:"averagePosition"`
+	AverageSpeed    *float64               `json:"averageSpeed,omitempty"` // NEW: Average speed in km/h
 	Passengers      []models.Passenger     `json:"passengers"`
 	LastUpdate      string                 `json:"lastUpdate"`
 	Status          string                 `json:"status"`
@@ -302,21 +303,39 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 			continue
 		}
 
-		// Calculate average position from active passengers
+		// Calculate average position and speed from active passengers
 		var totalLat, totalLng float64
+		var totalSpeed float64
+		var speedCount int
+		
 		for _, passenger := range activePassengers {
 			totalLat += passenger.Lat
 			totalLng += passenger.Lng
+			
+			// Include speed in average calculation if available
+			if passenger.Speed != nil && *passenger.Speed >= 0 {
+				totalSpeed += *passenger.Speed
+				speedCount++
+			}
 		}
+		
 		avgPosition := models.Position{
 			Lat: totalLat / float64(len(activePassengers)),
 			Lng: totalLng / float64(len(activePassengers)),
+		}
+		
+		// Calculate average speed (only if we have speed data from passengers)
+		var avgSpeed *float64
+		if speedCount > 0 {
+			calculatedAvgSpeed := totalSpeed / float64(speedCount)
+			avgSpeed = &calculatedAvgSpeed
 		}
 
 		update := TrainUpdate{
 			TrainNumber:     trainNumber,
 			PassengerCount:  len(activePassengers),
 			AveragePosition: avgPosition,
+			AverageSpeed:    avgSpeed, // NEW: Include average speed
 			Passengers:      activePassengers,
 			LastUpdate:      time.Now().Format(time.RFC3339),
 			Status:          "active",
