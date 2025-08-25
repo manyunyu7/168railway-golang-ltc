@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github.com/modernland/golang-live-tracking/models"
@@ -43,6 +45,7 @@ type TrainUpdate struct {
 type WebSocketHandler struct {
 	db     *gorm.DB
 	s3     *utils.S3Client
+	redis  *redis.Client // Redis client for real-time data
 	clients map[*websocket.Conn]bool
 	mutex   sync.RWMutex
 }
@@ -58,6 +61,33 @@ func NewWebSocketHandler(db *gorm.DB, s3Client *utils.S3Client) *WebSocketHandle
 	go handler.broadcastUpdates()
 	
 	return handler
+}
+
+// SetRedisClient sets the Redis client for real-time WebSocket data
+func (h *WebSocketHandler) SetRedisClient(redisClient *redis.Client) {
+	h.redis = redisClient
+	fmt.Printf("INFO: Redis client enabled for WebSocket handler (real-time updates)\n")
+}
+
+// getTrainDataFromRedis gets train data from Redis with S3 failover for WebSocket
+func (h *WebSocketHandler) getTrainDataFromRedis(trainNumber string) (*models.TrainData, error) {
+	if h.redis != nil {
+		// Try Redis first (real-time data)
+		ctx := context.Background()
+		trainKey := fmt.Sprintf("train_live:%s", trainNumber)
+		trainDataStr, err := h.redis.Get(ctx, trainKey).Result()
+		
+		if err == nil {
+			var trainData models.TrainData
+			if err := json.Unmarshal([]byte(trainDataStr), &trainData); err == nil {
+				return &trainData, nil
+			}
+		}
+	}
+	
+	// Fallback to S3 if Redis fails or data not found
+	fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+	return h.s3.GetTrainData(fileName)
 }
 
 // HandleWebSocket - WebSocket endpoint for real-time train updates
@@ -219,12 +249,15 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 	// Prepare train updates from database sessions
 	var updates []TrainUpdate
 	for trainNumber, trainSessionList := range trainSessions {
-		// Get detailed train data from S3
-		fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
-		trainData, err := h.s3.GetTrainData(fileName)
+		// Get detailed train data from Redis first, then S3 fallback (real-time data)
+		trainData, err := h.getTrainDataFromRedis(trainNumber)
 		if err != nil {
-			// If S3 file doesn't exist but we have active sessions, create basic update from database
-			log.Printf("WebSocket: S3 file missing for train %s, creating from database", trainNumber)
+			// If Redis and S3 both fail but we have active sessions, create basic update from database
+			if h.redis != nil {
+				log.Printf("WebSocket: Redis and S3 data missing for train %s, creating from database", trainNumber)
+			} else {
+				log.Printf("WebSocket: S3 file missing for train %s, creating from database", trainNumber)
+			}
 			update := h.createUpdateFromDatabaseSessions(trainNumber, trainSessionList, userMap)
 			if update != nil {
 				updates = append(updates, *update)

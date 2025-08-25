@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 
@@ -81,15 +85,51 @@ func main() {
 		log.Fatal("Failed to connect to database:", err)
 	}
 
+	// Configure MySQL connection pool to prevent connection exhaustion
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatal("Failed to get database instance:", err)
+	}
+	
+	// Set maximum number of open connections (prevent exhausting MySQL max_connections)
+	sqlDB.SetMaxOpenConns(25) // Conservative limit for shared MySQL server
+	
+	// Set maximum number of idle connections (reduce overhead)
+	sqlDB.SetMaxIdleConns(5) // Keep some connections ready for burst traffic
+	
+	// Set maximum lifetime of a connection (prevent stale connections)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute) // Force connection refresh every 5 minutes
+	
+	// Set maximum idle time for connections (close unused connections)
+	sqlDB.SetConnMaxIdleTime(1 * time.Minute) // Close idle connections after 1 minute
+	
+	fmt.Printf("INFO: MySQL connection pool configured - MaxOpen: 25, MaxIdle: 5\n")
+
 	// Auto migrate only our session tracking table (skip Laravel tables)
 	db.AutoMigrate(&models.LiveTrackingSession{})
 
-	// Skip Redis for simple implementation
-	// redisClient := redis.NewClient(&redis.Options{
-	//     Addr:     fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort),
-	//     Password: cfg.RedisPassword,
-	//     DB:       0,
-	// })
+	// Initialize Redis client for live tracking performance
+	var redisClient *redis.Client
+	if cfg.RedisEnabled {
+		redisClient = redis.NewClient(&redis.Options{
+			Addr:     fmt.Sprintf("%s:%s", cfg.RedisHost, cfg.RedisPort),
+			Password: cfg.RedisPassword,
+			DB:       cfg.RedisDB, // Use separate DB from Laravel
+		})
+		
+		// Test Redis connection
+		ctx := context.Background()
+		pong, err := redisClient.Ping(ctx).Result()
+		if err != nil {
+			log.Printf("WARNING: Redis connection failed: %v", err)
+			log.Printf("WARNING: Falling back to MySQL-only mode")
+			redisClient = nil
+		} else {
+			fmt.Printf("INFO: Redis connected successfully: %s (DB: %d)\n", pong, cfg.RedisDB)
+		}
+	} else {
+		fmt.Printf("INFO: Redis disabled via configuration\n")
+	}
 	
 	// Initialize S3 client
 	s3Client := utils.NewS3Client(
@@ -102,14 +142,26 @@ func main() {
 
 	// Initialize handlers and middleware
 	authMiddleware := middleware.NewAuthMiddleware(db)
-	// Use S3-enabled but Redis-free simple handler
+	// Initialize live tracking handler with Redis support (falls back to MySQL if Redis unavailable)
 	liveTrackingHandler := handlers.NewSimpleLiveTrackingHandler(db, s3Client)
+	// Set Redis client for live tracking performance (if available)
+	if redisClient != nil {
+		liveTrackingHandler.SetRedisClient(redisClient)
+	}
 	// Initialize WebSocket handler for real-time updates
 	wsHandler := handlers.NewWebSocketHandler(db, s3Client)
+	// Enable Redis for real-time WebSocket data (Redis-first, S3 fallback)
+	if redisClient != nil {
+		wsHandler.SetRedisClient(redisClient)
+	}
 	// Initialize API endpoints handler
 	apiEndpointsHandler := handlers.NewAPIEndpointsHandler(db)
 	// Initialize tile proxy handler for CartoDB tiles
 	tileProxyHandler := handlers.NewTileProxyHandler()
+	// Initialize admin handler for session management
+	adminHandler := handlers.NewAdminHandler(db)
+	// Initialize web admin handler for dashboard
+	webAdminHandler := handlers.NewWebAdminHandler(db)
 
 	// Setup routes
 	r := gin.Default()
@@ -155,8 +207,46 @@ func main() {
 		})
 	})
 
+	// Public documentation endpoint
+	r.GET("/docs/admin", func(c *gin.Context) {
+		c.File("/var/www/go-ltc/docs/admin_api_documentation.html")
+	})
+	
+	// Documentation index/redirect
+	r.GET("/docs", func(c *gin.Context) {
+		c.JSON(200, gin.H{
+			"available_docs": []gin.H{
+				{
+					"name": "Admin API Documentation",
+					"url": "/docs/admin",
+					"description": "Comprehensive guide for admin API endpoints",
+					"access": "public",
+				},
+			},
+			"service": "168Railway Live Tracking Documentation",
+		})
+	})
+
 	// WebSocket endpoint for real-time train updates
 	r.GET("/ws/trains", wsHandler.HandleWebSocket)
+	
+	// Web Admin Interface
+	adminWeb := r.Group("/admin")
+	{
+		// Public routes (no authentication)
+		adminWeb.GET("/login", webAdminHandler.ShowLoginPage)
+		adminWeb.POST("/login", webAdminHandler.HandleLogin)
+		adminWeb.GET("/logout", webAdminHandler.HandleLogout)
+		
+		// Protected routes (require session)
+		adminWeb.Use(webAdminHandler.RequireAdminSession())
+		adminWeb.GET("/", func(c *gin.Context) { c.Redirect(http.StatusFound, "/admin/dashboard") })
+		adminWeb.GET("/dashboard", webAdminHandler.ShowDashboard)
+		
+		// Web Admin API endpoints (use session authentication)
+		adminWeb.GET("/api/sessions", webAdminHandler.GetSessionsWeb)
+		adminWeb.POST("/api/sessions/terminate/:session_id", webAdminHandler.TerminateSessionWeb)
+	}
 
 	// API routes
 	api := r.Group("/api")
@@ -321,6 +411,19 @@ func main() {
 				"migration_guide": "Connect to WebSocket for real-time data, keep HTTP as fallback",
 			})
 		})
+		
+		// API Admin routes - require Sanctum token with admin role
+		admin := api.Group("/admin")
+		admin.Use(authMiddleware.SanctumAuth())   // Sanctum token only for API
+		admin.Use(middleware.RequireAdmin())      // Then check admin role
+		{
+			// Session management endpoints
+			admin.GET("/sessions", adminHandler.GetAllSessions)
+			admin.GET("/sessions/user/:user_id", adminHandler.GetSessionsByUser)
+			admin.POST("/sessions/terminate/:session_id", adminHandler.TerminateSession)
+			admin.POST("/sessions/terminate-user/:user_id", adminHandler.TerminateUserSessions)
+			admin.GET("/trains/active", adminHandler.GetActiveTrainsAdmin)
+		}
 		
 		mobile := api.Group("/mobile")
 		{

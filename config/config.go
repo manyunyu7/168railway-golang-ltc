@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"github.com/joho/godotenv"
 )
 
@@ -13,6 +14,12 @@ type Config struct {
 	DBPassword string
 	DBName     string
 
+	// Redis
+	RedisHost     string
+	RedisPort     string
+	RedisPassword string
+	RedisDB       int
+	RedisEnabled  bool
 	
 	// App Version
 	CurrentVersion string
@@ -43,6 +50,11 @@ func LoadConfig() *Config {
 		DBUsername:        getEnv("DB_USERNAME", "root"),
 		DBPassword:        getEnv("DB_PASSWORD", ""),
 		DBName:            getEnv("DB_NAME", "database"),
+		RedisHost:         getEnv("REDIS_HOST", "127.0.0.1"),
+		RedisPort:         getEnv("REDIS_PORT", "6379"),
+		RedisPassword:     getEnv("REDIS_PASSWORD", ""),
+		RedisDB:           getEnvAsInt("REDIS_DB", 1),
+		RedisEnabled:      getEnvAsBool("REDIS_ENABLED", true),
 		Port:              getEnv("PORT", "8080"),
 		GinMode:           getEnv("GIN_MODE", "debug"),
 		CurrentVersion:    getEnv("APP_CURRENT_VERSION", "1.2.0"),
@@ -60,6 +72,24 @@ func LoadConfig() *Config {
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
+	}
+	return defaultValue
+}
+
+func getEnvAsInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+func getEnvAsBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if boolValue, err := strconv.ParseBool(value); err == nil {
+			return boolValue
+		}
 	}
 	return defaultValue
 }

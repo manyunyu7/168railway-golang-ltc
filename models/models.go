@@ -151,6 +151,9 @@ type LiveTrackingSession struct {
 	Status        string    `json:"status" gorm:"default:active"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	
+	// Relationship
+	User          *User     `json:"user,omitempty" gorm:"foreignKey:UserID"`
 }
 
 func (LiveTrackingSession) TableName() string {

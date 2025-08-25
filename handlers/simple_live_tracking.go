@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github.com/modernland/golang-live-tracking/models"
@@ -20,9 +22,13 @@ import (
 type SimpleLiveTrackingHandler struct {
 	db *gorm.DB
 	s3 *utils.S3Client
+	redis *redis.Client // Redis client for live tracking performance
 	trainMutexes map[string]*sync.Mutex // mutex per train to prevent race conditions
 	mutexLock    sync.RWMutex           // protect the trainMutexes map itself
 	trainsListMutex sync.Mutex          // dedicated mutex for trains-list.json updates
+	trainsListCache map[string]interface{} // in-memory cache for trains list
+	trainsListCacheMutex sync.RWMutex       // protect trains list cache
+	lastCacheUpdate time.Time               // when cache was last updated
 }
 
 func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *SimpleLiveTrackingHandler {
@@ -30,7 +36,20 @@ func NewSimpleLiveTrackingHandler(db *gorm.DB, s3Client *utils.S3Client) *Simple
 		db: db,
 		s3: s3Client,
 		trainMutexes: make(map[string]*sync.Mutex),
+		trainsListCache: make(map[string]interface{}),
 	}
+}
+
+// SetRedisClient sets the Redis client for live tracking performance
+func (h *SimpleLiveTrackingHandler) SetRedisClient(redisClient *redis.Client) {
+	h.redis = redisClient
+	fmt.Printf("INFO: Redis client enabled for live tracking handler\n")
+	
+	// Start background cache updater if Redis is available
+	go h.startCacheUpdater()
+	
+	// Start Redis to S3 sync process (every 88 seconds)
+	go h.startRedisSyncToS3()
 }
 
 // getTrainMutex returns a mutex for the specific train to prevent race conditions
@@ -45,12 +64,16 @@ func (h *SimpleLiveTrackingHandler) getTrainMutex(trainNumber string) *sync.Mute
 	return h.trainMutexes[trainNumber]
 }
 
-// GetActiveTrainsList - Public API endpoint to serve active trains list (database-driven)
+// GetActiveTrainsList - Public API endpoint to serve active trains list (cached for performance)
 func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
-	fmt.Printf("DEBUG: Frontend requesting active trains list via database query\n")
+	if h.redis != nil {
+		fmt.Printf("DEBUG: Frontend requesting active trains list via Redis cache\n")
+	} else {
+		fmt.Printf("DEBUG: Frontend requesting active trains list via direct database query\n")
+	}
 	
-	// Generate trains list directly from database (real-time, no S3 dependency)
-	trainsListData := h.generateTrainsListFromDatabase()
+	// Use cached trains list for performance (updated every 5 seconds in background)
+	trainsListData := h.getCachedTrainsList()
 	
 	// Set proper CORS and cache headers
 	c.Header("Access-Control-Allow-Origin", "*")
@@ -76,18 +99,20 @@ func (h *SimpleLiveTrackingHandler) GetActiveTrainsList(c *gin.Context) {
 	c.JSON(http.StatusOK, trainsListData)
 }
 
-// GetTrainData - Public API endpoint to serve individual train data (proxy for S3)
+// GetTrainData - Public API endpoint to serve individual train data (Redis-first with S3 fallback)
 func (h *SimpleLiveTrackingHandler) GetTrainData(c *gin.Context) {
 	trainNumber := c.Param("trainNumber")
-	fmt.Printf("DEBUG: Frontend requesting train data for %s via API proxy\n", trainNumber)
 	
-	// Construct S3 key for train file
-	fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+	if h.redis != nil {
+		fmt.Printf("DEBUG: Frontend requesting train data for %s via Redis (with S3 fallback)\n", trainNumber)
+	} else {
+		fmt.Printf("DEBUG: Frontend requesting train data for %s via S3 (Redis disabled)\n", trainNumber)
+	}
 	
-	// Try to read train data from S3
-	trainData, err := h.s3.GetTrainData(fileName)
+	// Try to read train data from Redis first, fallback to S3
+	trainData, err := h.getTrainDataFromRedis(trainNumber)
 	if err != nil {
-		fmt.Printf("DEBUG: Train file %s not found: %v\n", fileName, err)
+		fmt.Printf("DEBUG: Train %s not found in Redis or S3: %v\n", trainNumber, err)
 		c.JSON(http.StatusNotFound, gin.H{
 			"error": "Train not found",
 			"trainNumber": trainNumber,
@@ -267,19 +292,40 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		trainData.LastUpdate = time.Now().Format(time.RFC3339)
 	}
 
-	// Upload to S3 with train-specific lock already acquired
-	if err := h.s3.UploadJSON(fileName, trainData); err != nil {
-		tx.Rollback()
-		fmt.Printf("ERROR: Failed to upload to S3: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"success": false,
-			"message": "Failed to start tracking session",
-			"error":   err.Error(),
-		})
-		return
+	// Store GPS position in Redis for real-time tracking (with S3 fallback)
+	if h.redis != nil {
+		// Store in Redis for real-time performance
+		if err := h.storeGPSInRedis(sessionID, user.ID, req.TrainNumber, req.InitialLat, req.InitialLng, user); err != nil {
+			fmt.Printf("WARNING: Failed to store GPS in Redis, falling back to S3: %v\n", err)
+			// Fallback to S3 if Redis fails
+			if err := h.s3.UploadJSON(fileName, trainData); err != nil {
+				tx.Rollback()
+				fmt.Printf("ERROR: Failed to upload to S3: %v\n", err)
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": "Failed to start tracking session",
+					"error":   err.Error(),
+				})
+				return
+			}
+			fmt.Printf("DEBUG: Session %s stored in S3 file %s (Redis fallback)\n", sessionID, fileName)
+		} else {
+			fmt.Printf("DEBUG: Session %s stored in Redis for real-time tracking\n", sessionID)
+		}
+	} else {
+		// No Redis available, use S3 (legacy mode)
+		if err := h.s3.UploadJSON(fileName, trainData); err != nil {
+			tx.Rollback()
+			fmt.Printf("ERROR: Failed to upload to S3: %v\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to start tracking session",
+				"error":   err.Error(),
+			})
+			return
+		}
+		fmt.Printf("DEBUG: Session %s stored in S3 file %s (Redis disabled)\n", sessionID, fileName)
 	}
-
-	fmt.Printf("DEBUG: Session %s stored in S3 file %s\n", sessionID, fileName)
 
 	// Store session in database (only if S3 succeeded)
 	session := models.LiveTrackingSession{
@@ -366,9 +412,9 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		}
 	}()
 
-	// Validate session in database (like Laravel cache)
+	// First check if session exists (regardless of status)
 	var session models.LiveTrackingSession
-	result := tx.Where("session_id = ? AND user_id = ? AND status = ?", req.SessionID, user.ID, "active").First(&session)
+	result := tx.Where("session_id = ? AND user_id = ?", req.SessionID, user.ID).First(&session)
 	
 	if result.Error != nil {
 		tx.Rollback()
@@ -378,26 +424,56 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		})
 		return
 	}
+	
+	// Check if session is terminated or inactive
+	if session.Status != "active" {
+		tx.Rollback()
+		fmt.Printf("DEBUG: User %d tried to update terminated/inactive session %s (status: %s)\n", 
+			user.ID, req.SessionID, session.Status)
+		
+		// Return 200 OK with EXACT same structure as successful update for backward compatibility
+		// Mobile apps won't break because they expect these exact fields
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "Mobile location updated successfully", // Same message as normal success
+			"updated_file": "", // Empty string instead of actual file since we didn't update
+		})
+		return
+	}
 
 	// Get train-specific mutex to prevent race conditions with other users on same train
 	trainMutex := h.getTrainMutex(session.TrainNumber)
 	trainMutex.Lock()
 	defer trainMutex.Unlock()
 
-	// Update location in S3 train file using session info (with mutex protection)
-	trainFile, err := h.updateLocationInTrainFile(session.FilePath, user.ID, req)
-	if err != nil {
+	// Update location in Redis for real-time tracking (with S3 fallback)
+	var updateError error
+	if h.redis != nil {
+		// Update GPS position in Redis (primary, fast)
+		if err := h.storeGPSInRedis(session.SessionID, user.ID, session.TrainNumber, req.Latitude, req.Longitude, user); err != nil {
+			fmt.Printf("WARNING: Failed to update GPS in Redis, falling back to S3: %v\n", err)
+			// Fallback to S3 if Redis fails
+			_, updateError = h.updateLocationInTrainFile(session.FilePath, user.ID, req)
+		} else {
+			fmt.Printf("DEBUG: GPS position updated in Redis for session %s\n", session.SessionID)
+		}
+	} else {
+		// No Redis available, use S3 (legacy mode)
+		_, updateError = h.updateLocationInTrainFile(session.FilePath, user.ID, req)
+	}
+
+	if updateError != nil {
 		tx.Rollback()
-		fmt.Printf("ERROR: Failed to update location in S3: %v\n", err)
+		fmt.Printf("ERROR: Failed to update location: %v\n", updateError)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
 			"message": "Failed to update location",
-			"error":   err.Error(),
+			"error":   updateError.Error(),
 		})
 		return
 	}
 
-	// Update heartbeat in database only if S3 update succeeded
+	// Update heartbeat in database only if GPS update succeeded
 	if err := tx.Model(&session).Update("last_heartbeat", time.Now()).Error; err != nil {
 		tx.Rollback()
 		fmt.Printf("ERROR: Failed to update heartbeat: %v\n", err)
@@ -420,17 +496,18 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		return
 	}
 
-	if trainFile != "" {
-		fmt.Printf("DEBUG: Successfully updated location in S3 file: %s\n", trainFile)
-		// Note: No longer maintaining trains-list.json - using database-driven approach
+	if h.redis != nil {
+		fmt.Printf("DEBUG: Successfully updated GPS position in Redis for user %d\n", user.ID)
 	} else {
-		fmt.Printf("DEBUG: No active train file found for user %d\n", user.ID)
+		fmt.Printf("DEBUG: GPS position updated via S3 for user %d (Redis disabled)\n", user.ID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "Mobile location updated successfully",
-		"updated_file": trainFile,
+		"storage": func() string {
+			if h.redis != nil { return "redis" } else { return "s3" }
+		}(),
 	})
 }
 
@@ -561,7 +638,27 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 			ToStationID:     req.ToStationID,
 			ToStationName:   req.ToStationName,
 		}
-		tripID, saveFailureReason = h.saveUserTrip(session, user.ID, req.TripSummary, req.GPSPath, &stationInfo)
+		
+		// Enhanced GPS path handling: Use mobile data if provided, otherwise try Redis, then S3 fallback
+		var finalGPSPath []GPSPoint
+		if len(req.GPSPath) > 0 {
+			// Use mobile-provided GPS path (preferred)
+			finalGPSPath = req.GPSPath
+			fmt.Printf("DEBUG: Using mobile GPS path with %d points for trip saving\n", len(req.GPSPath))
+		} else if h.redis != nil {
+			// Try to get GPS data from Redis (real-time)
+			redisGPSPath, err := h.getGPSPathFromRedis(req.SessionID, user.ID, session.TrainNumber)
+			if err == nil && len(redisGPSPath) > 0 {
+				finalGPSPath = redisGPSPath
+				fmt.Printf("DEBUG: Using Redis GPS data for trip saving (real-time position)\n")
+			} else {
+				fmt.Printf("DEBUG: Redis GPS data not available, will use S3 fallback in saveUserTrip\n")
+			}
+		} else {
+			fmt.Printf("DEBUG: Redis not available, will use S3 fallback in saveUserTrip\n")
+		}
+		
+		tripID, saveFailureReason = h.saveUserTrip(session, user.ID, req.TripSummary, finalGPSPath, &stationInfo)
 		tripSaved = (tripID != nil)
 		if tripSaved {
 			fmt.Printf("DEBUG: Saved trip with ID %d for user %d\n", *tripID, user.ID)
@@ -579,10 +676,24 @@ func (h *SimpleLiveTrackingHandler) StopMobileSession(c *gin.Context) {
 		}
 	}
 	
-	// Handle train file - remove user or delete entire file
-	err := h.handleStopSessionS3Operations(fileName, user.ID, false) // Don't pass saveTrip here
-	if err != nil {
-		fmt.Printf("ERROR: S3 operations failed: %v\n", err)
+	// Handle session cleanup - Redis first, S3 fallback
+	if h.redis != nil {
+		// Clean up Redis data (real-time approach)
+		if err := h.cleanupRedisSession(req.SessionID, user.ID, session.TrainNumber); err != nil {
+			fmt.Printf("ERROR: Redis cleanup failed: %v\n", err)
+			// Fallback to S3 operations if Redis fails
+			if err := h.handleStopSessionS3Operations(fileName, user.ID, false); err != nil {
+				fmt.Printf("ERROR: S3 fallback operations also failed: %v\n", err)
+			}
+		} else {
+			fmt.Printf("DEBUG: Successfully cleaned up Redis session data for user %d\n", user.ID)
+		}
+	} else {
+		// No Redis available, use S3 operations (legacy mode)
+		err := h.handleStopSessionS3Operations(fileName, user.ID, false)
+		if err != nil {
+			fmt.Printf("ERROR: S3 operations failed: %v\n", err)
+		}
 	}
 
 	// Mark session as completed in database
@@ -1220,6 +1331,408 @@ func calculateDistance(lat1, lon1, lat2, lon2 float64) float64 {
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 	
 	return R * c / 1000 // Return distance in kilometers
+}
+
+// startCacheUpdater starts a background goroutine to update trains list cache every 5 seconds
+func (h *SimpleLiveTrackingHandler) startCacheUpdater() {
+	if h.redis == nil {
+		return // No Redis, no cache updater needed
+	}
+	
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	
+	fmt.Printf("INFO: Started trains list cache updater (5-second interval)\n")
+	
+	for {
+		select {
+		case <-ticker.C:
+			h.updateTrainsListCache()
+		}
+	}
+}
+
+// updateTrainsListCache updates the in-memory cache with fresh data
+func (h *SimpleLiveTrackingHandler) updateTrainsListCache() {
+	// Generate fresh trains list from database
+	freshData := h.generateTrainsListFromDatabaseOptimized()
+	
+	// Update cache with write lock
+	h.trainsListCacheMutex.Lock()
+	h.trainsListCache = freshData
+	h.lastCacheUpdate = time.Now()
+	h.trainsListCacheMutex.Unlock()
+	
+	if trainCount, ok := freshData["total"].(int); ok {
+		fmt.Printf("DEBUG: Updated trains list cache with %d active trains\n", trainCount)
+	}
+}
+
+// getCachedTrainsList returns cached trains list or generates new one if cache is stale
+func (h *SimpleLiveTrackingHandler) getCachedTrainsList() map[string]interface{} {
+	if h.redis == nil {
+		// No Redis, use direct database query (old behavior)
+		return h.generateTrainsListFromDatabase()
+	}
+	
+	h.trainsListCacheMutex.RLock()
+	defer h.trainsListCacheMutex.RUnlock()
+	
+	// Check if cache is still fresh (within 10 seconds)
+	if time.Since(h.lastCacheUpdate) <= 10*time.Second && len(h.trainsListCache) > 0 {
+		return h.trainsListCache
+	}
+	
+	// Cache is stale or empty, trigger immediate update
+	go h.updateTrainsListCache()
+	
+	// Return current cache or fallback to database
+	if len(h.trainsListCache) > 0 {
+		return h.trainsListCache
+	}
+	return h.generateTrainsListFromDatabase()
+}
+
+// startRedisSyncToS3 starts a background goroutine to sync Redis data to S3 every 88 seconds
+func (h *SimpleLiveTrackingHandler) startRedisSyncToS3() {
+	if h.redis == nil {
+		return // No Redis, no sync needed
+	}
+	
+	ticker := time.NewTicker(88 * time.Second)
+	defer ticker.Stop()
+	
+	fmt.Printf("INFO: Started Redis to S3 sync process (88-second interval)\n")
+	
+	for {
+		select {
+		case <-ticker.C:
+			h.syncRedisToS3()
+		}
+	}
+}
+
+// syncRedisToS3 syncs all live train data from Redis to S3 for backup/failover
+func (h *SimpleLiveTrackingHandler) syncRedisToS3() {
+	if h.redis == nil {
+		return
+	}
+	
+	ctx := context.Background()
+	
+	// Get all live train keys from Redis
+	trainKeys, err := h.redis.Keys(ctx, "train_live:*").Result()
+	if err != nil {
+		fmt.Printf("ERROR: Failed to get train keys from Redis: %v\n", err)
+		return
+	}
+	
+	syncCount := 0
+	for _, key := range trainKeys {
+		// Extract train number from key (train_live:TRAIN-123 -> TRAIN-123)
+		trainNumber := key[11:] // Remove "train_live:" prefix
+		
+		// Get train data from Redis
+		trainDataStr, err := h.redis.Get(ctx, key).Result()
+		if err != nil {
+			fmt.Printf("ERROR: Failed to get train data for %s: %v\n", trainNumber, err)
+			continue
+		}
+		
+		// Parse train data
+		var trainData models.TrainData
+		if err := json.Unmarshal([]byte(trainDataStr), &trainData); err != nil {
+			fmt.Printf("ERROR: Failed to parse train data for %s: %v\n", trainNumber, err)
+			continue
+		}
+		
+		// Sync to S3 (same structure as before)
+		fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+		if err := h.s3.UploadJSON(fileName, trainData); err != nil {
+			fmt.Printf("ERROR: Failed to sync train %s to S3: %v\n", trainNumber, err)
+			continue
+		}
+		
+		syncCount++
+	}
+	
+	if syncCount > 0 {
+		fmt.Printf("INFO: Synced %d trains from Redis to S3 (88-second backup)\n", syncCount)
+	}
+}
+
+// Redis GPS Helper Methods
+
+// storeGPSInRedis stores user's GPS position in Redis for real-time tracking
+func (h *SimpleLiveTrackingHandler) storeGPSInRedis(sessionID string, userID uint, trainNumber string, lat, lng float64, user *models.User) error {
+	if h.redis == nil {
+		return fmt.Errorf("Redis not available")
+	}
+	
+	ctx := context.Background()
+	
+	// Store individual session data
+	sessionData := map[string]interface{}{
+		"user_id":      userID,
+		"train_number": trainNumber,
+		"lat":          lat,
+		"lng":          lng,
+		"timestamp":    time.Now().UnixMilli(),
+		"status":       "active",
+	}
+	
+	// Add username and station name
+	if user.Username != nil {
+		sessionData["username"] = *user.Username
+	} else {
+		sessionData["username"] = user.Name
+	}
+	if user.StationName != nil {
+		sessionData["station_name"] = *user.StationName
+	}
+	
+	sessionJSON, err := json.Marshal(sessionData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session data: %v", err)
+	}
+	
+	// Store session data with 10-minute expiration (auto-cleanup)
+	sessionKey := fmt.Sprintf("live_session:%s", sessionID)
+	if err := h.redis.Set(ctx, sessionKey, sessionJSON, 10*time.Minute).Err(); err != nil {
+		return fmt.Errorf("failed to store session in Redis: %v", err)
+	}
+	
+	// Update train's live data
+	return h.updateTrainDataInRedis(trainNumber)
+}
+
+// updateTrainDataInRedis rebuilds the train data from all active sessions for that train
+func (h *SimpleLiveTrackingHandler) updateTrainDataInRedis(trainNumber string) error {
+	if h.redis == nil {
+		return fmt.Errorf("Redis not available")
+	}
+	
+	ctx := context.Background()
+	
+	// Get all sessions for this train from database (source of truth)
+	var sessions []models.LiveTrackingSession
+	h.db.Where("train_number = ? AND status = ?", trainNumber, "active").Find(&sessions)
+	
+	if len(sessions) == 0 {
+		// No active sessions, remove train from Redis
+		trainKey := fmt.Sprintf("train_live:%s", trainNumber)
+		h.redis.Del(ctx, trainKey)
+		return nil
+	}
+	
+	var passengers []models.Passenger
+	var totalLat, totalLng float64
+	activeCount := 0
+	
+	// Get GPS data for each session from Redis
+	for _, session := range sessions {
+		sessionKey := fmt.Sprintf("live_session:%s", session.SessionID)
+		sessionDataStr, err := h.redis.Get(ctx, sessionKey).Result()
+		
+		if err != nil {
+			// Session not in Redis, skip (might be expired or not updated yet)
+			continue
+		}
+		
+		var sessionData map[string]interface{}
+		if err := json.Unmarshal([]byte(sessionDataStr), &sessionData); err != nil {
+			continue
+		}
+		
+		// Extract GPS data
+		lat, _ := sessionData["lat"].(float64)
+		lng, _ := sessionData["lng"].(float64)
+		timestamp, _ := sessionData["timestamp"].(float64)
+		username, _ := sessionData["username"].(string)
+		stationName, _ := sessionData["station_name"].(string)
+		
+		passenger := models.Passenger{
+			UserID:      session.UserID,
+			UserType:    "authenticated",
+			ClientType:  "mobile",
+			Lat:         lat,
+			Lng:         lng,
+			Timestamp:   int64(timestamp),
+			SessionID:   session.SessionID,
+			Status:      "active",
+			Username:    username,
+			StationName: stationName,
+		}
+		
+		passengers = append(passengers, passenger)
+		totalLat += lat
+		totalLng += lng
+		activeCount++
+	}
+	
+	if activeCount == 0 {
+		// No GPS data available, remove train
+		trainKey := fmt.Sprintf("train_live:%s", trainNumber)
+		h.redis.Del(ctx, trainKey)
+		return nil
+	}
+	
+	// Build train data structure
+	trainData := models.TrainData{
+		TrainID:         trainNumber,
+		Route:           fmt.Sprintf("Route information for train %s", trainNumber),
+		PassengerCount:  activeCount,
+		AveragePosition: models.Position{Lat: totalLat / float64(activeCount), Lng: totalLng / float64(activeCount)},
+		Passengers:      passengers,
+		LastUpdate:      time.Now().Format(time.RFC3339),
+		Status:          "active",
+		DataSource:      "redis-live-gps",
+	}
+	
+	trainJSON, err := json.Marshal(trainData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal train data: %v", err)
+	}
+	
+	// Store train data with 15-minute expiration
+	trainKey := fmt.Sprintf("train_live:%s", trainNumber)
+	if err := h.redis.Set(ctx, trainKey, trainJSON, 15*time.Minute).Err(); err != nil {
+		return fmt.Errorf("failed to store train data in Redis: %v", err)
+	}
+	
+	return nil
+}
+
+// getTrainDataFromRedis gets train data from Redis with S3 failover
+func (h *SimpleLiveTrackingHandler) getTrainDataFromRedis(trainNumber string) (*models.TrainData, error) {
+	if h.redis != nil {
+		// Try Redis first
+		ctx := context.Background()
+		trainKey := fmt.Sprintf("train_live:%s", trainNumber)
+		trainDataStr, err := h.redis.Get(ctx, trainKey).Result()
+		
+		if err == nil {
+			var trainData models.TrainData
+			if err := json.Unmarshal([]byte(trainDataStr), &trainData); err == nil {
+				return &trainData, nil
+			}
+		}
+	}
+	
+	// Fallback to S3 if Redis fails or data not found
+	fileName := fmt.Sprintf("trains/train-%s.json", trainNumber)
+	return h.s3.GetTrainData(fileName)
+}
+
+// getGPSPathFromRedis gets complete GPS tracking history for a user session from Redis
+func (h *SimpleLiveTrackingHandler) getGPSPathFromRedis(sessionID string, userID uint, trainNumber string) ([]GPSPoint, error) {
+	if h.redis == nil {
+		return nil, fmt.Errorf("Redis not available")
+	}
+	
+	ctx := context.Background()
+	
+	// First try to get the session data from Redis
+	sessionKey := fmt.Sprintf("live_session:%s", sessionID)
+	sessionDataStr, err := h.redis.Get(ctx, sessionKey).Result()
+	
+	if err != nil {
+		return nil, fmt.Errorf("session not found in Redis: %v", err)
+	}
+	
+	var sessionData map[string]interface{}
+	if err := json.Unmarshal([]byte(sessionDataStr), &sessionData); err != nil {
+		return nil, fmt.Errorf("failed to parse session data: %v", err)
+	}
+	
+	// For now, we only have the latest GPS position in Redis
+	// In a production system, you'd store a GPS path history
+	// But we can create a single point from the current position
+	lat, _ := sessionData["lat"].(float64)
+	lng, _ := sessionData["lng"].(float64)
+	timestamp, _ := sessionData["timestamp"].(float64)
+	
+	// Create GPS path with current position
+	// Note: This gives us the most recent position from Redis
+	gpsPath := []GPSPoint{
+		{
+			Lat:       lat,
+			Lng:       lng,
+			Timestamp: int64(timestamp),
+		},
+	}
+	
+	return gpsPath, nil
+}
+
+// cleanupRedisSession removes user session data from Redis
+func (h *SimpleLiveTrackingHandler) cleanupRedisSession(sessionID string, userID uint, trainNumber string) error {
+	if h.redis == nil {
+		return nil // No Redis, nothing to clean
+	}
+	
+	ctx := context.Background()
+	
+	// Remove user's session data
+	sessionKey := fmt.Sprintf("live_session:%s", sessionID)
+	if err := h.redis.Del(ctx, sessionKey).Err(); err != nil {
+		fmt.Printf("WARNING: Failed to delete session from Redis: %v\n", err)
+	} else {
+		fmt.Printf("DEBUG: Cleaned up Redis session data for %s\n", sessionID)
+	}
+	
+	// Update the train data to remove this user
+	return h.updateTrainDataInRedis(trainNumber)
+}
+
+// generateTrainsListFromDatabaseOptimized - Optimized version with reduced S3 calls
+func (h *SimpleLiveTrackingHandler) generateTrainsListFromDatabaseOptimized() map[string]interface{} {
+	now := time.Now()
+	var activeTrains []interface{}
+	
+	// Get all active sessions from database (real-time source of truth)
+	var sessions []models.LiveTrackingSession
+	h.db.Where("status = ? AND last_heartbeat > ?", "active", now.Add(-5*time.Minute)).Find(&sessions)
+	
+	// Group sessions by train number
+	trainSessions := make(map[string][]models.LiveTrackingSession)
+	for _, session := range sessions {
+		trainSessions[session.TrainNumber] = append(trainSessions[session.TrainNumber], session)
+	}
+	
+	// Build trains list from active sessions (MINIMAL S3 calls)
+	for trainNumber, trainSessionList := range trainSessions {
+		if len(trainSessionList) == 0 {
+			continue
+		}
+		
+		passengerCount := len(trainSessionList)
+		lastUpdate := now.Format(time.RFC3339)
+		
+		// For cached trains list, we don't need exact GPS coordinates
+		// Just need train ID and passenger count for the frontend list
+		activeTrains = append(activeTrains, map[string]interface{}{
+			"trainId":        trainNumber,
+			"passengerCount": passengerCount,
+			"lastUpdate":     lastUpdate,
+			"status":         "active",
+			// Note: No averagePosition needed for trains list - only individual train data needs GPS
+		})
+	}
+	
+	// Create optimized trains list structure
+	return map[string]interface{}{
+		"trains":      activeTrains,
+		"total":       len(activeTrains),
+		"lastUpdated": now.Format(time.RFC3339),
+		"source":      "redis-cached-database-optimized",
+		"websocket_upgrade": map[string]interface{}{
+			"available": true,
+			"url":       "wss://go-ltc.trainradar35.com/ws/trains",
+			"benefits":  "Real-time updates, lower bandwidth, individual passenger positions",
+			"message_types": []string{"initial_data", "train_updates", "ping/pong"},
+		},
+	}
 }
 
 // generateTrainsListFromDatabase - Generate trains list from database without S3 dependency
