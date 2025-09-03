@@ -110,6 +110,43 @@ func (h *SimpleLiveTrackingHandler) getUserWithStation(userID uint) *UserStation
 	return userCache
 }
 
+// preserveExistingStatus retrieves and preserves the last status from Redis
+func (h *SimpleLiveTrackingHandler) preserveExistingStatus(sessionID string, sessionData map[string]interface{}) error {
+	if h.redis == nil {
+		return fmt.Errorf("Redis not available")
+	}
+
+	ctx := context.Background()
+	sessionKey := fmt.Sprintf("live_session:%s", sessionID)
+	
+	// Get existing session data from Redis
+	existingDataStr, err := h.redis.Get(ctx, sessionKey).Result()
+	if err != nil {
+		return fmt.Errorf("failed to get existing session: %v", err)
+	}
+
+	var existingData map[string]interface{}
+	if err := json.Unmarshal([]byte(existingDataStr), &existingData); err != nil {
+		return fmt.Errorf("failed to unmarshal existing session: %v", err)
+	}
+
+	// Preserve status fields if they exist
+	if statusEmoji, exists := existingData["status_emoji"]; exists {
+		sessionData["status_emoji"] = statusEmoji
+		fmt.Printf("DEBUG: Preserving status emoji: %v\n", statusEmoji)
+	}
+	if statusMessage, exists := existingData["status_message"]; exists {
+		sessionData["status_message"] = statusMessage
+		fmt.Printf("DEBUG: Preserving status message: %v\n", statusMessage)
+	}
+	if statusTimestamp, exists := existingData["status_timestamp"]; exists {
+		sessionData["status_timestamp"] = statusTimestamp
+		fmt.Printf("DEBUG: Preserving status timestamp: %v\n", statusTimestamp)
+	}
+
+	return nil
+}
+
 // getTrainMutex returns a mutex for the specific train to prevent race conditions
 func (h *SimpleLiveTrackingHandler) getTrainMutex(trainNumber string) *sync.Mutex {
 	h.mutexLock.Lock()
@@ -284,14 +321,14 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		
 		// Create passenger with username and station name
 		passenger := models.Passenger{
-			UserID:     user.ID,
-			UserType:   "authenticated", 
-			ClientType: "mobile",
-			Lat:        req.InitialLat,
-			Lng:        req.InitialLng,
-			Timestamp:  time.Now().UnixMilli(),
-			SessionID:  sessionID,
-			Status:     "active",
+			UserID:        user.ID,
+			UserType:      "authenticated", 
+			ClientType:    "mobile",
+			Lat:           req.InitialLat,
+			Lng:           req.InitialLng,
+			Timestamp:     time.Now().UnixMilli(),
+			SessionID:     sessionID,
+			SessionStatus: "active",
 		}
 		
 		// Add user details with cached station lookup
@@ -318,14 +355,14 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 		
 		// Add new passenger
 		newPassenger := models.Passenger{
-			UserID:     user.ID,
-			UserType:   "authenticated", 
-			ClientType: "mobile",
-			Lat:        req.InitialLat,
-			Lng:        req.InitialLng,
-			Timestamp:  time.Now().UnixMilli(),
-			SessionID:  sessionID,
-			Status:     "active",
+			UserID:        user.ID,
+			UserType:      "authenticated", 
+			ClientType:    "mobile",
+			Lat:           req.InitialLat,
+			Lng:           req.InitialLng,
+			Timestamp:     time.Now().UnixMilli(),
+			SessionID:     sessionID,
+			SessionStatus: "active",
 		}
 		
 		// Add username and station name
@@ -358,11 +395,14 @@ func (h *SimpleLiveTrackingHandler) StartMobileSession(c *gin.Context) {
 			Speed     *float64 `json:"speed,omitempty"`
 			Heading   *float64 `json:"heading,omitempty"`
 			Altitude  *float64 `json:"altitude,omitempty"`
+			// User status fields (optional)
+			StatusEmoji    *string `json:"status_emoji,omitempty"`
+			StatusMessage  *string `json:"status_message,omitempty"`
 		}{
 			SessionID: sessionID,
 			Latitude:  req.InitialLat,
 			Longitude: req.InitialLng,
-			// Initial position has no speed data
+			// Initial position has no speed or status data
 		}
 		if err := h.storeGPSInRedis(sessionID, user.ID, req.TrainNumber, initialGPS, user); err != nil {
 			fmt.Printf("WARNING: Failed to store GPS in Redis, falling back to S3: %v\n", err)
@@ -460,6 +500,9 @@ func (h *SimpleLiveTrackingHandler) UpdateMobileLocation(c *gin.Context) {
 		Speed     *float64 `json:"speed,omitempty"`
 		Heading   *float64 `json:"heading,omitempty"`
 		Altitude  *float64 `json:"altitude,omitempty"`
+		// User status fields (optional)
+		StatusEmoji    *string `json:"status_emoji,omitempty"`
+		StatusMessage  *string `json:"status_message,omitempty"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -947,6 +990,9 @@ func (h *SimpleLiveTrackingHandler) updateLocationInTrainFile(fileName string, u
 	Speed     *float64 `json:"speed,omitempty"`
 	Heading   *float64 `json:"heading,omitempty"`
 	Altitude  *float64 `json:"altitude,omitempty"`
+	// User status fields (optional)
+	StatusEmoji    *string `json:"status_emoji,omitempty"`
+	StatusMessage  *string `json:"status_message,omitempty"`
 }) (string, error) {
 	// Get train data from S3
 	trainData, err := h.s3.GetTrainData(fileName)
@@ -966,7 +1012,16 @@ func (h *SimpleLiveTrackingHandler) updateLocationInTrainFile(fileName string, u
 			trainData.Passengers[i].Speed = req.Speed
 			trainData.Passengers[i].Heading = req.Heading
 			trainData.Passengers[i].Altitude = req.Altitude
-			trainData.Passengers[i].Status = "active"
+			trainData.Passengers[i].SessionStatus = "active"
+			
+			// Update user status if provided
+			if req.StatusEmoji != nil && req.StatusMessage != nil {
+				trainData.Passengers[i].UserStatus = &models.UserStatus{
+					Emoji:     *req.StatusEmoji,
+					Message:   *req.StatusMessage,
+					Timestamp: time.Now().Format(time.RFC3339),
+				}
+			}
 			// Note: Username and StationName are preserved, not overwritten
 			userFound = true
 			break
@@ -1000,7 +1055,7 @@ func (h *SimpleLiveTrackingHandler) recalculateAveragePosition(trainData *models
 	activeCount := 0
 	
 	for _, passenger := range trainData.Passengers {
-		if passenger.Status == "active" {
+		if passenger.SessionStatus == "active" {
 			totalLat += passenger.Lat
 			totalLng += passenger.Lng
 			activeCount++
@@ -1575,6 +1630,9 @@ func (h *SimpleLiveTrackingHandler) storeGPSInRedis(sessionID string, userID uin
 	Speed     *float64 `json:"speed,omitempty"`
 	Heading   *float64 `json:"heading,omitempty"`
 	Altitude  *float64 `json:"altitude,omitempty"`
+	// User status fields (optional)
+	StatusEmoji    *string `json:"status_emoji,omitempty"`
+	StatusMessage  *string `json:"status_message,omitempty"`
 }, user *models.User) error {
 	if h.redis == nil {
 		return fmt.Errorf("Redis not available")
@@ -1604,6 +1662,27 @@ func (h *SimpleLiveTrackingHandler) storeGPSInRedis(sessionID string, userID uin
 	}
 	if req.Altitude != nil {
 		sessionData["altitude"] = *req.Altitude
+	}
+	
+	// Handle user status - persist last status or clear if explicitly requested
+	if req.StatusEmoji != nil && req.StatusMessage != nil {
+		if *req.StatusEmoji == "" && *req.StatusMessage == "" {
+			// Clear status - remove from Redis
+			fmt.Printf("DEBUG: User %d clearing status\n", userID)
+			// Don't store status fields - they will be absent from sessionData
+		} else {
+			// Set new status
+			sessionData["status_emoji"] = *req.StatusEmoji
+			sessionData["status_message"] = *req.StatusMessage
+			sessionData["status_timestamp"] = time.Now().Format(time.RFC3339)
+			fmt.Printf("DEBUG: User %d set status: %s %s\n", userID, *req.StatusEmoji, *req.StatusMessage)
+		}
+	} else {
+		// No status fields sent - preserve existing status by reading from current Redis
+		fmt.Printf("DEBUG: User %d sent GPS without status - preserving last status\n", userID)
+		if err := h.preserveExistingStatus(sessionID, sessionData); err != nil {
+			fmt.Printf("DEBUG: Failed to preserve status for session %s: %v\n", sessionID, err)
+		}
 	}
 	
 	// Add user details with cached station lookup
@@ -1675,17 +1754,33 @@ func (h *SimpleLiveTrackingHandler) updateTrainDataInRedis(trainNumber string) e
 		stationName, _ := sessionData["station_name"].(string)
 		
 		passenger := models.Passenger{
-			UserID:      session.UserID,
-			UserType:    "authenticated",
-			ClientType:  "mobile",
-			Lat:         lat,
-			Lng:         lng,
-			Timestamp:   int64(timestamp),
-			SessionID:   session.SessionID,
-			Status:      "active",
-			Name:        name,
-			Username:    username,
-			StationName: stationName,
+			UserID:        session.UserID,
+			UserType:      "authenticated",
+			ClientType:    "mobile",
+			Lat:           lat,
+			Lng:           lng,
+			Timestamp:     int64(timestamp),
+			SessionID:     session.SessionID,
+			SessionStatus: "active",
+			Name:          name,
+			Username:      username,
+			StationName:   stationName,
+		}
+		
+		// Add user status if available in Redis
+		if statusEmoji, hasEmoji := sessionData["status_emoji"].(string); hasEmoji {
+			if statusMessage, hasMessage := sessionData["status_message"].(string); hasMessage {
+				if statusTimestamp, hasTimestamp := sessionData["status_timestamp"].(string); hasTimestamp {
+					passenger.UserStatus = &models.UserStatus{
+						Emoji:     statusEmoji,
+						Message:   statusMessage,
+						Timestamp: statusTimestamp,
+					}
+					fmt.Printf("DEBUG: Retrieved status from Redis for user %d: %s %s\n", session.UserID, statusEmoji, statusMessage)
+				}
+			}
+		} else {
+			fmt.Printf("DEBUG: No status found in Redis for user %d (keys: %v)\n", session.UserID, sessionData)
 		}
 		
 		// Add optional GPS metadata if available in Redis

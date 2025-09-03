@@ -1,6 +1,18 @@
-# Golang Live Tracking API
+# 168Railway Go Live Tracking API
 
 A high-performance Golang implementation of the mobile live tracking API, designed to replace Laravel endpoints for better performance and scalability.
+
+**Production URL**: https://go-ltc.trainradar35.com/
+
+## 📚 Documentation
+
+**[👉 Complete Documentation Index](docs/README.md)**
+
+### Quick Links
+- **[API Documentation](docs/api/)** - Complete API reference
+- **[Integration Guides](docs/guides/)** - Frontend integration examples  
+- **[Development Setup](CLAUDE.md)** - Environment setup and commands
+- **[Authentication Guide](docs/guides/AUTHENTICATION_GUIDE.md)** - Token management
 
 ## Features
 

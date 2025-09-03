@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>168Railway Live Tracking - Admin API Documentation</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f8f9fa;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #e9ecef;
+        }
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        .header p {
+            color: #6c757d;
+            font-size: 1.1em;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            background: #007bff;
+            color: white;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+            margin: 0 5px;
+        }
+        .badge.admin { background: #dc3545; }
+        .badge.auth { background: #28a745; }
+        .badge.public { background: #6c757d; }
+        
+        .nav {
+            background: #343a40;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .nav a {
+            color: #adb5bd;
+            text-decoration: none;
+            margin-right: 20px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: all 0.3s;
+        }
+        .nav a:hover {
+            background: #495057;
+            color: white;
+        }
+        
+        .section {
+            margin: 40px 0;
+            padding: 20px;
+            border-left: 4px solid #007bff;
+            background: #f8f9ff;
+            border-radius: 0 8px 8px 0;
+        }
+        .section h2 {
+            color: #2c3e50;
+            margin-top: 0;
+            display: flex;
+            align-items: center;
+        }
+        .section h3 {
+            color: #495057;
+            border-bottom: 1px solid #dee2e6;
+            padding-bottom: 8px;
+        }
+        
+        .endpoint {
+            background: white;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        .endpoint-header {
+            background: #f8f9fa;
+            padding: 15px;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .method {
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.9em;
+        }
+        .method.get { background: #d4edda; color: #155724; }
+        .method.post { background: #cce7ff; color: #004085; }
+        .method.delete { background: #f8d7da; color: #721c24; }
+        
+        .endpoint-body {
+            padding: 20px;
+        }
+        
+        pre {
+            background: #2d3748;
+            color: #e2e8f0;
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.9em;
+        }
+        .code-inline {
+            background: #f1f3f4;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+        
+        .params-table, .response-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        .params-table th, .params-table td,
+        .response-table th, .response-table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .params-table th, .response-table th {
+            background: #f8f9fa;
+            font-weight: 600;
+        }
+        .param-required {
+            color: #dc3545;
+            font-size: 0.8em;
+            font-weight: bold;
+        }
+        .param-optional {
+            color: #6c757d;
+            font-size: 0.8em;
+        }
+        
+        .alert {
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .alert.info {
+            background: #cce7ff;
+            border-left: 4px solid #007bff;
+            color: #004085;
+        }
+        .alert.warning {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            color: #856404;
+        }
+        .alert.success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            color: #155724;
+        }
+        .alert.danger {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            color: #721c24;
+        }
+        
+        .footer {
+            text-align: center;
+            margin-top: 50px;
+            padding-top: 20px;
+            border-top: 1px solid #dee2e6;
+            color: #6c757d;
+        }
+        
+        .toc {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .toc h3 {
+            margin-top: 0;
+            color: #495057;
+        }
+        .toc ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .toc li {
+            margin: 8px 0;
+        }
+        .toc a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        .toc a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚄 168Railway Live Tracking</h1>
+            <p>Admin API Documentation</p>
+            <div>
+                <span class="badge admin">Admin Only</span>
+                <span class="badge auth">Authentication Required</span>
+                <span class="badge">Version 2.0</span>
+            </div>
+        </div>
+
+        <div class="nav">
+            <a href="#overview">Overview</a>
+            <a href="#authentication">Authentication</a>
+            <a href="#endpoints">Endpoints</a>
+            <a href="#examples">Examples</a>
+            <a href="#errors">Error Handling</a>
+        </div>
+
+        <div class="toc">
+            <h3>📋 Table of Contents</h3>
+            <ul>
+                <li><a href="#overview">🔍 Overview</a></li>
+                <li><a href="#authentication">🔐 Authentication & Authorization</a></li>
+                <li><a href="#endpoints">🛠️ API Endpoints</a>
+                    <ul style="padding-left: 20px; margin-top: 8px;">
+                        <li><a href="#get-all-sessions">Get All Sessions</a></li>
+                        <li><a href="#get-user-sessions">Get Sessions by User</a></li>
+                        <li><a href="#terminate-session">Terminate Specific Session</a></li>
+                        <li><a href="#terminate-user-sessions">Terminate All User Sessions</a></li>
+                        <li><a href="#get-active-trains">Get Active Trains (Admin View)</a></li>
+                    </ul>
+                </li>
+                <li><a href="#examples">💡 Usage Examples</a></li>
+                <li><a href="#errors">❌ Error Handling</a></li>
+            </ul>
+        </div>
+
+        <div class="section" id="overview">
+            <h2>🔍 Overview</h2>
+            <p>The Admin API provides comprehensive session management capabilities for administrators of the 168Railway Live Tracking system. This API allows admins to monitor, manage, and terminate live tracking sessions across the platform.</p>
+            
+            <div class="alert info">
+                <strong>🌐 Base URL:</strong> <code class="code-inline">https://go-ltc.trainradar35.com/api/admin</code><br>
+                <strong>📝 Content Type:</strong> <code class="code-inline">application/json</code><br>
+                <strong>🔒 Security:</strong> Laravel Sanctum Token + Admin Role Required
+            </div>
+
+            <h3>✨ Key Features</h3>
+            <ul>
+                <li><strong>Session Monitoring:</strong> View all live tracking sessions with detailed information</li>
+                <li><strong>User Management:</strong> View and manage sessions for specific users</li>
+                <li><strong>Force Termination:</strong> Terminate problematic or stuck sessions</li>
+                <li><strong>Train Overview:</strong> Get comprehensive view of active trains and passenger counts</li>
+                <li><strong>Audit Logging:</strong> All admin actions are logged for security and compliance</li>
+                <li><strong>Real-time Data:</strong> Access to live session data and train information</li>
+            </ul>
+        </div>
+
+        <div class="section" id="authentication">
+            <h2>🔐 Authentication & Authorization</h2>
+            
+            <h3>Required Credentials</h3>
+            <table class="params-table">
+                <tr>
+                    <th>Requirement</th>
+                    <th>Details</th>
+                    <th>Status</th>
+                </tr>
+                <tr>
+                    <td><strong>Laravel Sanctum Token</strong></td>
+                    <td>Valid authentication token from 168railway.com login</td>
+                    <td><span class="param-required">Required</span></td>
+                </tr>
+                <tr>
+                    <td><strong>Admin Role</strong></td>
+                    <td>User must have <code>role = 'admin'</code> in users table</td>
+                    <td><span class="param-required">Required</span></td>
+                </tr>
+            </table>
+
+            <h3>Admin Users</h3>
+            <div class="alert success">
+                <strong>Current Admin:</strong><br>
+                • <strong>Username:</strong> 168RailwayAdmin<br>
+                • <strong>User ID:</strong> 1<br>
+                • <strong>Role:</strong> admin
+            </div>
+
+            <h3>Authorization Header Format</h3>
+            <pre>Authorization: Bearer {your_sanctum_token}</pre>
+
+            <div class="alert warning">
+                <strong>⚠️ Security Note:</strong> All admin API calls are logged with user information for security auditing. Ensure you have proper authorization before accessing these endpoints.
+            </div>
+        </div>
+
+        <div class="section" id="endpoints">
+            <h2>🛠️ API Endpoints</h2>
+
+            <div class="endpoint" id="get-all-sessions">
+                <div class="endpoint-header">
+                    <div>
+                        <span class="method get">GET</span>
+                        <strong>/api/admin/sessions</strong>
+                    </div>
+                    <div>
+                        <span class="badge admin">Admin Only</span>
+                    </div>
+                </div>
+                <div class="endpoint-body">
+                    <p><strong>Description:</strong> Retrieve all live tracking sessions with filtering and pagination support.</p>
+                    
+                    <h4>Query Parameters</h4>
+                    <table class="params-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                            <th>Default</th>
+                        </tr>
+                        <tr>
+                            <td><code>status</code></td>
+                            <td>string</td>
+                            <td>Filter by session status: <code>active</code>, <code>inactive</code>, <code>terminated</code>, <code>completed</code>, <code>all</code></td>
+                            <td><code>active</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>limit</code></td>
+                            <td>integer</td>
+                            <td>Number of results to return (max 100)</td>
+                            <td><code>50</code></td>
+                        </tr>
+                        <tr>
+                            <td><code>offset</code></td>
+                            <td>integer</td>
+                            <td>Number of results to skip for pagination</td>
+                            <td><code>0</code></td>
+                        </tr>
+                    </table>
+
+                    <h4>Example Response</h4>
+                    <pre>{
+  "success": true,
+  "data": {
+    "sessions": [
+      {
+        "id": 138,
+        "session_id": "d77f0730-2221-43c4-a47d-69402c542a0d",
+        "user_id": 30411,
+        "user_name": "John Doe",
+        "username": "johndoe123",
+        "station_name": "JAKARTA KOTA",
+        "train_number": "KA 5",
+        "status": "active",
+        "started_at": "2025-08-23T06:57:35.476Z",
+        "last_heartbeat": "2025-08-23T09:57:43.253Z",
+        "created_at": "2025-08-23T06:57:35.476Z"
+      }
+    ],
+    "total": 1,
+    "limit": 50,
+    "offset": 0,
+    "status_filter": "active"
+  }
+}</pre>
+                </div>
+            </div>
+
+            <div class="endpoint" id="get-user-sessions">
+                <div class="endpoint-header">
+                    <div>
+                        <span class="method get">GET</span>
+                        <strong>/api/admin/sessions/user/{user_id}</strong>
+                    </div>
+                    <div>
+                        <span class="badge admin">Admin Only</span>
+                    </div>
+                </div>
+                <div class="endpoint-body">
+                    <p><strong>Description:</strong> Get all sessions for a specific user (last 20 sessions).</p>
+                    
+                    <h4>Path Parameters</h4>
+                    <table class="params-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td><code>user_id</code></td>
+                            <td>integer</td>
+                            <td><span class="param-required">Required</span> - User ID to fetch sessions for</td>
+                        </tr>
+                    </table>
+
+                    <h4>Example Response</h4>
+                    <pre>{
+  "success": true,
+  "data": {
+    "user_id": 30411,
+    "sessions": [
+      {
+        "id": 138,
+        "session_id": "d77f0730-2221-43c4-a47d-69402c542a0d",
+        "user_id": 30411,
+        "train_number": "KA 5",
+        "status": "active",
+        "started_at": "2025-08-23T06:57:35.476Z",
+        "last_heartbeat": "2025-08-23T09:57:43.253Z"
+      }
+    ],
+    "count": 1
+  }
+}</pre>
+                </div>
+            </div>
+
+            <div class="endpoint" id="terminate-session">
+                <div class="endpoint-header">
+                    <div>
+                        <span class="method post">POST</span>
+                        <strong>/api/admin/sessions/terminate/{session_id}</strong>
+                    </div>
+                    <div>
+                        <span class="badge admin">Admin Only</span>
+                    </div>
+                </div>
+                <div class="endpoint-body">
+                    <p><strong>Description:</strong> Forcefully terminate a specific session. Useful for stuck or problematic sessions.</p>
+                    
+                    <h4>Path Parameters</h4>
+                    <table class="params-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td><code>session_id</code></td>
+                            <td>string (UUID)</td>
+                            <td><span class="param-required">Required</span> - Session UUID to terminate</td>
+                        </tr>
+                    </table>
+
+                    <h4>Example Response</h4>
+                    <pre>{
+  "success": true,
+  "message": "Session terminated successfully",
+  "data": {
+    "session_id": "d77f0730-2221-43c4-a47d-69402c542a0d",
+    "user_id": 30411,
+    "train_number": "KA 5",
+    "previous_status": "active",
+    "new_status": "terminated",
+    "terminated_by": 1,
+    "terminated_at": "2025-08-23T10:30:15Z"
+  }
+}</pre>
+                </div>
+            </div>
+
+            <div class="endpoint" id="terminate-user-sessions">
+                <div class="endpoint-header">
+                    <div>
+                        <span class="method post">POST</span>
+                        <strong>/api/admin/sessions/terminate-user/{user_id}</strong>
+                    </div>
+                    <div>
+                        <span class="badge admin">Admin Only</span>
+                    </div>
+                </div>
+                <div class="endpoint-body">
+                    <p><strong>Description:</strong> Terminate all active sessions for a specific user. Useful when a user has multiple stuck sessions.</p>
+                    
+                    <h4>Path Parameters</h4>
+                    <table class="params-table">
+                        <tr>
+                            <th>Parameter</th>
+                            <th>Type</th>
+                            <th>Description</th>
+                        </tr>
+                        <tr>
+                            <td><code>user_id</code></td>
+                            <td>integer</td>
+                            <td><span class="param-required">Required</span> - User ID whose sessions should be terminated</td>
+                        </tr>
+                    </table>
+
+                    <h4>Example Response</h4>
+                    <pre>{
+  "success": true,
+  "message": "User sessions terminated successfully",
+  "data": {
+    "user_id": 30411,
+    "sessions_terminated": 2,
+    "terminated_by": 1,
+    "terminated_at": "2025-08-23T10:30:15Z"
+  }
+}</pre>
+                </div>
+            </div>
+
+            <div class="endpoint" id="get-active-trains">
+                <div class="endpoint-header">
+                    <div>
+                        <span class="method get">GET</span>
+                        <strong>/api/admin/trains/active</strong>
+                    </div>
+                    <div>
+                        <span class="badge admin">Admin Only</span>
+                    </div>
+                </div>
+                <div class="endpoint-body">
+                    <p><strong>Description:</strong> Get detailed overview of all active trains with passenger counts and activity information.</p>
+
+                    <h4>Example Response</h4>
+                    <pre>{
+  "success": true,
+  "data": {
+    "active_trains": [
+      {
+        "train_number": "KA 5",
+        "session_count": 1,
+        "user_ids": "30411",
+        "last_activity": "2025-08-23T09:57:43Z"
+      },
+      {
+        "train_number": "KA 122",
+        "session_count": 3,
+        "user_ids": "1,12,36159",
+        "last_activity": "2025-08-23T09:45:30Z"
+      }
+    ],
+    "total_trains": 2,
+    "requested_by": "Admin",
+    "timestamp": "2025-08-23T10:30:15Z"
+  }
+}</pre>
+                </div>
+            </div>
+        </div>
+
+        <div class="section" id="examples">
+            <h2>💡 Usage Examples</h2>
+
+            <h3>🔍 Get All Active Sessions</h3>
+            <pre>curl -H "Authorization: Bearer your_admin_token" \
+     https://go-ltc.trainradar35.com/api/admin/sessions</pre>
+
+            <h3>📄 Get Sessions with Pagination</h3>
+            <pre>curl -H "Authorization: Bearer your_admin_token" \
+     "https://go-ltc.trainradar35.com/api/admin/sessions?limit=20&offset=40"</pre>
+
+            <h3>🔍 Get All Sessions (Any Status)</h3>
+            <pre>curl -H "Authorization: Bearer your_admin_token" \
+     "https://go-ltc.trainradar35.com/api/admin/sessions?status=all"</pre>
+
+            <h3>👤 Get User's Session History</h3>
+            <pre>curl -H "Authorization: Bearer your_admin_token" \
+     https://go-ltc.trainradar35.com/api/admin/sessions/user/12345</pre>
+
+            <h3>🛑 Terminate a Specific Session</h3>
+            <pre>curl -X POST \
+     -H "Authorization: Bearer your_admin_token" \
+     https://go-ltc.trainradar35.com/api/admin/sessions/terminate/d77f0730-2221-43c4-a47d-69402c542a0d</pre>
+
+            <h3>🚫 Terminate All User Sessions</h3>
+            <pre>curl -X POST \
+     -H "Authorization: Bearer your_admin_token" \
+     https://go-ltc.trainradar35.com/api/admin/sessions/terminate-user/12345</pre>
+
+            <h3>🚄 Get Active Trains Overview</h3>
+            <pre>curl -H "Authorization: Bearer your_admin_token" \
+     https://go-ltc.trainradar35.com/api/admin/trains/active</pre>
+        </div>
+
+        <div class="section" id="errors">
+            <h2>❌ Error Handling</h2>
+
+            <h3>HTTP Status Codes</h3>
+            <table class="response-table">
+                <tr>
+                    <th>Status Code</th>
+                    <th>Meaning</th>
+                    <th>Description</th>
+                </tr>
+                <tr>
+                    <td><code>200</code></td>
+                    <td>OK</td>
+                    <td>Request successful</td>
+                </tr>
+                <tr>
+                    <td><code>400</code></td>
+                    <td>Bad Request</td>
+                    <td>Invalid parameters or request format</td>
+                </tr>
+                <tr>
+                    <td><code>401</code></td>
+                    <td>Unauthorized</td>
+                    <td>Invalid or missing authentication token</td>
+                </tr>
+                <tr>
+                    <td><code>403</code></td>
+                    <td>Forbidden</td>
+                    <td>User does not have admin role</td>
+                </tr>
+                <tr>
+                    <td><code>404</code></td>
+                    <td>Not Found</td>
+                    <td>Session or user not found</td>
+                </tr>
+                <tr>
+                    <td><code>500</code></td>
+                    <td>Internal Server Error</td>
+                    <td>Server-side error</td>
+                </tr>
+            </table>
+
+            <h3>Error Response Format</h3>
+            <pre>{
+  "success": false,
+  "message": "Error description",
+  "error": "Detailed error information (when available)"
+}</pre>
+
+            <h3>Common Error Examples</h3>
+
+            <h4>🔐 Authentication Required</h4>
+            <pre>{
+  "success": false,
+  "message": "Authentication required"
+}</pre>
+
+            <h4>🚫 Admin Access Required</h4>
+            <pre>{
+  "success": false,
+  "message": "Admin access required",
+  "error": "You do not have permission to access this resource"
+}</pre>
+
+            <h4>❓ Invalid Session</h4>
+            <pre>{
+  "success": false,
+  "message": "Session not found"
+}</pre>
+
+            <h4>⚠️ Already Terminated</h4>
+            <pre>{
+  "success": false,
+  "message": "Session is already terminated",
+  "current_status": "terminated"
+}</pre>
+        </div>
+
+        <div class="section">
+            <h2>🔒 Security & Compliance</h2>
+            
+            <div class="alert info">
+                <h4>🛡️ Security Features</h4>
+                <ul>
+                    <li><strong>Double Authentication:</strong> Sanctum token validation + admin role verification</li>
+                    <li><strong>Audit Logging:</strong> All admin actions logged with user ID, timestamp, and action details</li>
+                    <li><strong>Input Validation:</strong> All parameters validated and sanitized</li>
+                    <li><strong>Rate Limiting:</strong> Admin endpoints protected against abuse</li>
+                </ul>
+            </div>
+
+            <div class="alert warning">
+                <h4>⚠️ Best Practices</h4>
+                <ul>
+                    <li>Always use HTTPS for API calls</li>
+                    <li>Store admin tokens securely</li>
+                    <li>Monitor admin activity regularly</li>
+                    <li>Use session termination judiciously</li>
+                    <li>Verify user consent before terminating sessions</li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>📊 Real-time Integration</h2>
+            
+            <p>The Admin API works seamlessly with the live tracking system:</p>
+            
+            <ul>
+                <li><strong>WebSocket Integration:</strong> Changes made via admin API are reflected in real-time WebSocket broadcasts</li>
+                <li><strong>S3 Synchronization:</strong> Session terminations automatically clean up S3 train data files</li>
+                <li><strong>Database Consistency:</strong> All operations maintain ACID compliance</li>
+                <li><strong>Mobile App Compatibility:</strong> Terminated sessions gracefully handled by mobile apps</li>
+            </ul>
+            
+            <div class="alert success">
+                <strong>🔗 Related Endpoints:</strong><br>
+                • <strong>Public Train Data:</strong> <code>/api/active-train-list</code><br>
+                • <strong>WebSocket Updates:</strong> <code>wss://go-ltc.trainradar35.com/ws/trains</code><br>
+                • <strong>Health Check:</strong> <code>/health</code>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>
+                <strong>168Railway Live Tracking Admin API</strong><br>
+                Generated on: <script>document.write(new Date().toLocaleString())</script><br>
+                Version: 2.0 | Server: go-ltc.trainradar35.com<br>
+                <em>For technical support, contact the development team.</em>
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // Add smooth scrolling for navigation links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                document.querySelector(this.getAttribute('href')).scrollIntoView({
+                    behavior: 'smooth'
+                });
+            });
+        });
+
+        // Add copy-to-clipboard functionality for code blocks
+        document.querySelectorAll('pre').forEach(pre => {
+            const button = document.createElement('button');
+            button.textContent = '📋 Copy';
+            button.style.cssText = `
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: #4a5568;
+                color: white;
+                border: none;
+                padding: 5px 10px;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 0.8em;
+            `;
+            
+            pre.style.position = 'relative';
+            pre.appendChild(button);
+            
+            button.addEventListener('click', () => {
+                navigator.clipboard.writeText(pre.textContent.replace('📋 Copy', '').trim());
+                button.textContent = '✅ Copied!';
+                setTimeout(() => button.textContent = '📋 Copy', 2000);
+            });
+        });
+    </script>
+</body>
+</html>

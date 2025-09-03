@@ -1,23 +1,29 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
 	"github.com/modernland/golang-live-tracking/models"
 )
 
 type APIEndpointsHandler struct {
-	db *gorm.DB
+	db    *gorm.DB
+	redis *redis.Client
 }
 
-func NewAPIEndpointsHandler(db *gorm.DB) *APIEndpointsHandler {
+func NewAPIEndpointsHandler(db *gorm.DB, redisClient *redis.Client) *APIEndpointsHandler {
 	return &APIEndpointsHandler{
-		db: db,
+		db:    db,
+		redis: redisClient,
 	}
 }
 
@@ -25,12 +31,41 @@ func NewAPIEndpointsHandler(db *gorm.DB) *APIEndpointsHandler {
 // Returns all stations with platforms, matching Laravel API structure
 func (h *APIEndpointsHandler) GetStations(c *gin.Context) {
 	var stations []models.Station
+	cacheKey := "api:stations:all"
 	
-	result := h.db.Preload("Platforms").
-		Select("station_id, station_code, station_name, latitude, longitude").
+	// Try to get from cache first
+	if h.redis != nil {
+		cached, err := h.redis.Get(context.Background(), cacheKey).Result()
+		if err == nil {
+			if json.Unmarshal([]byte(cached), &stations) == nil {
+				c.Header("X-Cache", "HIT")
+				c.JSON(http.StatusOK, stations)
+				return
+			}
+		}
+	}
+	
+	// Set timeout context for database query
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	result := h.db.WithContext(ctx).Select("station_id, station_code, station_name, latitude, longitude").
 		Find(&stations)
 		
 	if result.Error != nil {
+		// Try to serve stale cache as fallback
+		if h.redis != nil {
+			staleKey := cacheKey + ":stale"
+			cached, err := h.redis.Get(context.Background(), staleKey).Result()
+			if err == nil {
+				if json.Unmarshal([]byte(cached), &stations) == nil {
+					c.Header("X-Cache", "STALE")
+					c.JSON(http.StatusOK, stations)
+					return
+				}
+			}
+		}
+		
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to fetch stations",
 			"detail": result.Error.Error(),
@@ -38,6 +73,15 @@ func (h *APIEndpointsHandler) GetStations(c *gin.Context) {
 		return
 	}
 
+	// Cache the result for 5 minutes
+	if h.redis != nil {
+		if data, err := json.Marshal(stations); err == nil {
+			h.redis.Set(context.Background(), cacheKey, data, 5*time.Minute)
+			h.redis.Set(context.Background(), cacheKey+":stale", data, 24*time.Hour) // Keep stale version
+		}
+	}
+	
+	c.Header("X-Cache", "MISS")
 	c.JSON(http.StatusOK, stations)
 }
 
@@ -59,6 +103,10 @@ type ScheduleResponse struct {
 // Supports pagination: /api/schedules?page=1&limit=100
 func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	var scheduleDetails []ScheduleResponse
+	
+	// Set timeout context for database query
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 	
 	// Parse pagination parameters - only paginate if explicitly requested
 	var usePagination bool
@@ -90,7 +138,7 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	}
 	
 	// Build optimized query - select only needed fields
-	query := h.db.Table("schedule_details").
+	query := h.db.WithContext(ctx).Table("schedule_details").
 		Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks")
 	
 	// Check for station_id filter parameter
@@ -98,7 +146,7 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	if stationID != "" {
 		// Filter by specific station - only return schedules for trains that pass through this station
 		query = query.Where("train_id IN (?)", 
-			h.db.Table("schedule_details").
+			h.db.WithContext(ctx).Table("schedule_details").
 				Select("DISTINCT train_id").
 				Where("station_id = ?", stationID))
 	}
@@ -121,10 +169,10 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 
 	// Get total count for pagination metadata
 	var totalCount int64
-	countQuery := h.db.Table("schedule_details")
+	countQuery := h.db.WithContext(ctx).Table("schedule_details")
 	if stationID != "" {
 		countQuery = countQuery.Where("train_id IN (?)", 
-			h.db.Table("schedule_details").
+			h.db.WithContext(ctx).Table("schedule_details").
 				Select("DISTINCT train_id").
 				Where("station_id = ?", stationID))
 	}

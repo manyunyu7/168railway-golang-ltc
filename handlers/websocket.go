@@ -315,7 +315,7 @@ func (h *WebSocketHandler) broadcastTrainUpdates() {
 					// Update passenger status from session heartbeat
 					timeSinceHeartbeat := time.Now().Sub(session.LastHeartbeat)
 					if timeSinceHeartbeat <= 2*time.Minute { // 2 minutes tolerance
-						passenger.Status = "active"
+						passenger.SessionStatus = "active"
 						
 						// Add user details with cached station lookup
 						if userCache := h.getUserWithStation(session.UserID); userCache != nil {
@@ -422,12 +422,12 @@ func (h *WebSocketHandler) createUpdateFromDatabaseSessions(trainNumber string, 
 		timeSinceHeartbeat := time.Now().Sub(session.LastHeartbeat)
 		if timeSinceHeartbeat <= 2*time.Minute {
 			passenger := models.Passenger{
-				UserID:     session.UserID,
-				UserType:   "authenticated",
-				ClientType: "mobile", 
-				SessionID:  session.SessionID,
-				Status:     "active",
-				Timestamp:  session.LastHeartbeat.UnixMilli(),
+				UserID:        session.UserID,
+				UserType:      "authenticated",
+				ClientType:    "mobile", 
+				SessionID:     session.SessionID,
+				SessionStatus: "active",
+				Timestamp:     session.LastHeartbeat.UnixMilli(),
 				// Note: No GPS coordinates available without S3 file
 			}
 			
