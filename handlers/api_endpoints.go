@@ -104,8 +104,37 @@ type ScheduleResponse struct {
 func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 	var scheduleDetails []ScheduleResponse
 	
-	// Set timeout context for database query
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// Build cache key based on query parameters
+	stationID := c.Query("station_id")
+	pageStr := c.Query("page")
+	limitStr := c.Query("limit")
+	cacheKey := fmt.Sprintf("api:schedules:station_%s:page_%s:limit_%s", stationID, pageStr, limitStr)
+	
+	// Try to get from Redis cache first
+	if h.redis != nil {
+		cached, err := h.redis.Get(context.Background(), cacheKey).Result()
+		if err == nil {
+			// Parse cached data
+			if json.Unmarshal([]byte(cached), &scheduleDetails) == nil {
+				// Also restore headers from cache
+				headersKey := cacheKey + ":headers"
+				if headers, err := h.redis.Get(context.Background(), headersKey).Result(); err == nil {
+					var headerMap map[string]string
+					if json.Unmarshal([]byte(headers), &headerMap) == nil {
+						for k, v := range headerMap {
+							c.Header(k, v)
+						}
+					}
+				}
+				c.Header("X-Cache", "HIT")
+				c.JSON(http.StatusOK, scheduleDetails)
+				return
+			}
+		}
+	}
+	
+	// Set timeout context for database query - increased from 15s to 30s
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	
 	// Parse pagination parameters - only paginate if explicitly requested
@@ -137,72 +166,142 @@ func (h *APIEndpointsHandler) GetSchedules(c *gin.Context) {
 		offset = (page - 1) * limit
 	}
 	
-	// Build optimized query - select only needed fields
-	query := h.db.WithContext(ctx).Table("schedule_details").
-		Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks")
-	
-	// Check for station_id filter parameter
-	stationID := c.Query("station_id")
-	if stationID != "" {
-		// Filter by specific station - only return schedules for trains that pass through this station
-		query = query.Where("train_id IN (?)", 
-			h.db.WithContext(ctx).Table("schedule_details").
-				Select("DISTINCT train_id").
-				Where("station_id = ?", stationID))
-	}
-	
-	// Apply pagination and ordering only if requested
-	query = query.Order("train_id, stop_sequence")
-	if usePagination {
-		query = query.Offset(offset).Limit(limit)
-	}
-	
-	result := query.Find(&scheduleDetails)
-		
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to fetch schedules",
-			"detail": result.Error.Error(),
-		})
-		return
-	}
-
-	// Get total count for pagination metadata
-	var totalCount int64
-	countQuery := h.db.WithContext(ctx).Table("schedule_details")
-	if stationID != "" {
-		countQuery = countQuery.Where("train_id IN (?)", 
-			h.db.WithContext(ctx).Table("schedule_details").
-				Select("DISTINCT train_id").
-				Where("station_id = ?", stationID))
-	}
-	countQuery.Count(&totalCount)
-	
-	// Add metadata headers
-	c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
-	
-	// Add pagination headers only if pagination is used
-	if usePagination {
-		totalPages := (totalCount + int64(limit) - 1) / int64(limit)
-		c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
-		c.Header("X-Current-Page", fmt.Sprintf("%d", page))
-		c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
-	}
+	// Check for station_id filter parameter (already retrieved above for cache key)
 	
 	if stationID != "" {
-		// Get unique train count for this station
-		var trainCount int64
-		h.db.Table("schedule_details").
+		// Optimized approach: First get train IDs in a separate query
+		var trainIDs []uint
+		subQueryResult := h.db.WithContext(ctx).Table("schedule_details").
+			Select("DISTINCT train_id").
 			Where("station_id = ?", stationID).
-			Distinct("train_id").
-			Count(&trainCount)
-			
-		// Add filter metadata headers
+			Pluck("train_id", &trainIDs)
+		
+		if subQueryResult.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to fetch train IDs for station",
+				"detail": subQueryResult.Error.Error(),
+			})
+			return
+		}
+		
+		// If no trains found for this station, return empty result
+		if len(trainIDs) == 0 {
+			c.Header("X-Total-Count", "0")
+			c.Header("X-Records-Count", "0")
+			if stationID != "" {
+				c.Header("X-Station-Filter", stationID)
+				c.Header("X-Trains-Count", "0")
+			}
+			c.JSON(http.StatusOK, []ScheduleResponse{})
+			return
+		}
+		
+		// Build optimized query using train IDs directly
+		query := h.db.WithContext(ctx).Table("schedule_details").
+			Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks").
+			Where("train_id IN ?", trainIDs).
+			Order("train_id, stop_sequence")
+		
+		if usePagination {
+			query = query.Offset(offset).Limit(limit)
+		}
+		
+		result := query.Find(&scheduleDetails)
+		
+		if result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to fetch schedules",
+				"detail": result.Error.Error(),
+			})
+			return
+		}
+		
+		// Get total count for pagination metadata
+		var totalCount int64
+		h.db.WithContext(ctx).Table("schedule_details").
+			Where("train_id IN ?", trainIDs).
+			Count(&totalCount)
+		
+		// Add metadata headers
+		c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
 		c.Header("X-Station-Filter", stationID)
-		c.Header("X-Trains-Count", fmt.Sprintf("%d", trainCount))
+		c.Header("X-Trains-Count", fmt.Sprintf("%d", len(trainIDs)))
+		
+		if usePagination {
+			totalPages := (totalCount + int64(limit) - 1) / int64(limit)
+			c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
+			c.Header("X-Current-Page", fmt.Sprintf("%d", page))
+			c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
+		}
+	} else {
+		// No station filter - fetch all schedules
+		query := h.db.WithContext(ctx).Table("schedule_details").
+			Select("schedule_detail_id, train_id, station_id, stop_sequence, arrival_time, departure_time, is_pass_through, remarks").
+			Order("train_id, stop_sequence")
+		
+		if usePagination {
+			query = query.Offset(offset).Limit(limit)
+		}
+		
+		result := query.Find(&scheduleDetails)
+		
+		if result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "Failed to fetch schedules",
+				"detail": result.Error.Error(),
+			})
+			return
+		}
+		
+		// Get total count for pagination metadata
+		var totalCount int64
+		h.db.WithContext(ctx).Table("schedule_details").Count(&totalCount)
+		
+		// Add metadata headers
+		c.Header("X-Total-Count", fmt.Sprintf("%d", totalCount))
+		
+		if usePagination {
+			totalPages := (totalCount + int64(limit) - 1) / int64(limit)
+			c.Header("X-Total-Pages", fmt.Sprintf("%d", totalPages))
+			c.Header("X-Current-Page", fmt.Sprintf("%d", page))
+			c.Header("X-Per-Page", fmt.Sprintf("%d", limit))
+		}
 	}
+	
 	c.Header("X-Records-Count", fmt.Sprintf("%d", len(scheduleDetails)))
-
+	
+	// Cache the successful response
+	if h.redis != nil {
+		// Cache the data
+		if data, err := json.Marshal(scheduleDetails); err == nil {
+			// Cache for 10 minutes for full data, 5 minutes for filtered/paginated
+			cacheDuration := 10 * time.Minute
+			if stationID != "" || usePagination {
+				cacheDuration = 5 * time.Minute
+			}
+			h.redis.Set(context.Background(), cacheKey, data, cacheDuration)
+			
+			// Also cache headers
+			headerMap := map[string]string{
+				"X-Total-Count":   c.GetHeader("X-Total-Count"),
+				"X-Records-Count": c.GetHeader("X-Records-Count"),
+			}
+			if stationID != "" {
+				headerMap["X-Station-Filter"] = c.GetHeader("X-Station-Filter")
+				headerMap["X-Trains-Count"] = c.GetHeader("X-Trains-Count")
+			}
+			if usePagination {
+				headerMap["X-Total-Pages"] = c.GetHeader("X-Total-Pages")
+				headerMap["X-Current-Page"] = c.GetHeader("X-Current-Page")
+				headerMap["X-Per-Page"] = c.GetHeader("X-Per-Page")
+			}
+			if headersData, err := json.Marshal(headerMap); err == nil {
+				h.redis.Set(context.Background(), cacheKey+":headers", headersData, cacheDuration)
+			}
+		}
+	}
+	
+	c.Header("X-Cache", "MISS")
 	c.JSON(http.StatusOK, scheduleDetails)
 }
 

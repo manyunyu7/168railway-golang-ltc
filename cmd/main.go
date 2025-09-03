@@ -91,19 +91,19 @@ func main() {
 		log.Fatal("Failed to get database instance:", err)
 	}
 	
-	// Set maximum number of open connections (prevent exhausting MySQL max_connections)
-	sqlDB.SetMaxOpenConns(25) // Conservative limit for shared MySQL server
+	// Set maximum number of open connections (optimized for 40k users)
+	sqlDB.SetMaxOpenConns(200) // Increased for high traffic - can handle ~2000 req/sec
 	
-	// Set maximum number of idle connections (reduce overhead)
-	sqlDB.SetMaxIdleConns(5) // Keep some connections ready for burst traffic
+	// Set maximum number of idle connections (balance performance vs memory)
+	sqlDB.SetMaxIdleConns(50) // Keep more connections ready for burst traffic
 	
 	// Set maximum lifetime of a connection (prevent stale connections)
 	sqlDB.SetConnMaxLifetime(5 * time.Minute) // Force connection refresh every 5 minutes
 	
 	// Set maximum idle time for connections (close unused connections)
-	sqlDB.SetConnMaxIdleTime(1 * time.Minute) // Close idle connections after 1 minute
+	sqlDB.SetConnMaxIdleTime(2 * time.Minute) // Close idle connections after 2 minutes (increased)
 	
-	fmt.Printf("INFO: MySQL connection pool configured - MaxOpen: 25, MaxIdle: 5\n")
+	fmt.Printf("INFO: MySQL connection pool configured - MaxOpen: 200, MaxIdle: 50\n")
 
 	// Auto migrate only our session tracking table (skip Laravel tables)
 	db.AutoMigrate(&models.LiveTrackingSession{})
