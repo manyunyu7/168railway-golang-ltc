@@ -13,7 +13,10 @@ The Spotter Location API enables real-time tracking of users who are actively vi
 - ✅ **Auto-cleanup** after 5 minutes of inactivity
 - ✅ **Scalable architecture** supporting 30,000+ concurrent users
 - ✅ **Sanctum authentication** for secure access
-- ✅ **Public access** for retrieving spotter locations
+- ✅ **Public access** for retrieving spotter locations (no token required)
+- ✅ **Privacy controls** - hide location or identity
+- ✅ **Role-based responses** - unified endpoint with admin enhancement
+- ✅ **Username display** - shows username instead of full name
 
 ## Endpoints
 
@@ -35,7 +38,9 @@ Content-Type: application/json
 ```json
 {
   "latitude": -6.200000,
-  "longitude": 106.816666
+  "longitude": 106.816666,
+  "hide_location": false,
+  "hide_identity": true
 }
 ```
 
@@ -44,6 +49,8 @@ Content-Type: application/json
 |-------|------|----------|------------|-------------|
 | `latitude` | float64 | Yes | -90 to 90 | User's latitude coordinate |
 | `longitude` | float64 | Yes | -180 to 180 | User's longitude coordinate |
+| `hide_location` | boolean | No | true/false | Hide completely from public map |
+| `hide_identity` | boolean | No | true/false | Show as "Anonymous User" |
 
 #### Success Response (200)
 ```json
@@ -79,7 +86,9 @@ Content-Type: application/json
 }
 ```
 
-#### cURL Example
+#### cURL Examples
+
+**Standard Heartbeat**:
 ```bash
 curl -X POST \
   -H "Authorization: Bearer 424|nVD9mNiWqrizuSDATBT2TQxBQcOz7SlmFIEPNm5I925e22cd" \
@@ -88,38 +97,50 @@ curl -X POST \
   https://go-ltc.trainradar35.com/api/spotters/heartbeat
 ```
 
+**With Privacy Settings**:
+```bash
+curl -X POST \
+  -H "Authorization: Bearer 424|nVD9mNiWqrizuSDATBT2TQxBQcOz7SlmFIEPNm5I925e22cd" \
+  -H "Content-Type: application/json" \
+  -d '{"latitude": -6.200000, "longitude": 106.816666, "hide_identity": true}' \
+  https://go-ltc.trainradar35.com/api/spotters/heartbeat
+```
+
 ---
 
 ### 2. Get Active Spotters (GET /active)
 
-Retrieve all currently active spotters for map display.
+Retrieve active spotters for map display. Returns different data based on user role.
 
 **Endpoint**: `GET /api/spotters/active`  
-**Authentication**: None (Public endpoint)  
+**Authentication**: **Optional** - Public endpoint with admin enhancement  
 **Cache**: 30-second cache, refreshed automatically
 
-#### Request Headers
+#### Behavior
+- **No Token (Anonymous)**: Returns public filtered results (privacy respected)
+- **Regular User Token**: Returns same public filtered results
+- **Admin User Token**: Returns full unfiltered admin data with privacy settings
+
+#### Request Headers (Optional)
 ```http
 Accept: application/json
+Authorization: Bearer {sanctum_token}    # Optional - for admin access
 ```
 
-#### Success Response (200)
+#### Public Response (200) - Anonymous/Regular Users
 ```json
 {
   "spotters": [
     {
       "user_id": 12,
-      "username": "168Railway",
-      "name": "Henry Augusta",
+      "username": "168Railway", 
       "latitude": -6.200000,
       "longitude": 106.816666,
       "last_update": 1756874139155,
       "is_active": true
     },
     {
-      "user_id": 25,
-      "username": "trainspotter",
-      "name": "John Doe",
+      "username": "Anonymous User",
       "latitude": -6.175000,
       "longitude": 106.827000,
       "last_update": 1756874098432,
@@ -131,23 +152,81 @@ Accept: application/json
 }
 ```
 
+#### Admin Response (200) - Admin Users Only
+```json
+{
+  "spotters": [
+    {
+      "user_id": 12,
+      "username": "168Railway",
+      "name": "Henry Augusta", 
+      "latitude": -6.200000,
+      "longitude": 106.816666,
+      "last_update": 1756874139155,
+      "is_active": true,
+      "hide_location": false,
+      "hide_identity": false
+    },
+    {
+      "user_id": 25,
+      "username": "trainspotter",
+      "name": "John Doe",
+      "latitude": -6.175000,
+      "longitude": 106.827000, 
+      "last_update": 1756874098432,
+      "is_active": true,
+      "hide_location": false,
+      "hide_identity": true
+    }
+  ],
+  "total": 2,
+  "hidden_from_public": 0,
+  "last_updated": "2025-09-03T04:35:50Z"
+}
+```
+
 #### Response Fields
+
+**Public Response Fields**:
 | Field | Type | Description |
 |-------|------|-------------|
-| `spotters` | array | List of active spotters |
-| `spotters[].user_id` | integer | User's unique identifier |
-| `spotters[].username` | string | User's display username |
-| `spotters[].name` | string | User's full name |
+| `spotters` | array | List of visible active spotters |
+| `spotters[].user_id` | integer\|null | User ID (null for anonymous users) |
+| `spotters[].username` | string | Username or "Anonymous User" |
 | `spotters[].latitude` | float64 | Current latitude |
 | `spotters[].longitude` | float64 | Current longitude |
-| `spotters[].last_update` | integer | Unix timestamp (milliseconds) of last heartbeat |
+| `spotters[].last_update` | integer | Unix timestamp (milliseconds) |
 | `spotters[].is_active` | boolean | Always true for active spotters |
-| `total` | integer | Total number of active spotters |
+| `total` | integer | Total number of visible spotters |
 | `last_updated` | string | ISO timestamp when response was generated |
 
-#### cURL Example
+**Admin Response Additional Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `spotters[].name` | string | User's full name |
+| `spotters[].hide_location` | boolean | Privacy setting for location |
+| `spotters[].hide_identity` | boolean | Privacy setting for identity |
+| `hidden_from_public` | integer | Count of spotters hidden from public |
+
+#### cURL Examples
+
+**Anonymous Access (Public Data)**:
 ```bash
 curl -H "Accept: application/json" \
+  https://go-ltc.trainradar35.com/api/spotters/active
+```
+
+**Regular User Access (Same Public Data)**:
+```bash
+curl -H "Accept: application/json" \
+  -H "Authorization: Bearer REGULAR_USER_TOKEN" \
+  https://go-ltc.trainradar35.com/api/spotters/active
+```
+
+**Admin Access (Full Unfiltered Data)**:
+```bash
+curl -H "Accept: application/json" \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
   https://go-ltc.trainradar35.com/api/spotters/active
 ```
 

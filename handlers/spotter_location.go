@@ -17,19 +17,41 @@ import (
 
 // SpotterLocation represents a user's location while viewing the map
 type SpotterLocation struct {
-	UserID     uint    `json:"user_id"`
-	Username   string  `json:"username"`
-	Name       string  `json:"name"`
+	UserID           uint    `json:"user_id"`
+	Username         string  `json:"username"`
+	Name             string  `json:"name"`
+	Latitude         float64 `json:"latitude"`
+	Longitude        float64 `json:"longitude"`
+	LastUpdate       int64   `json:"last_update"` // Unix milliseconds
+	IsActive         bool    `json:"is_active"`
+	
+	// Privacy settings
+	HideLocation     bool    `json:"hide_location"`      // Hide location completely from public
+	HideIdentity     bool    `json:"hide_identity"`      // Hide username/name, show as anonymous
+}
+
+// PublicSpotterLocation for public API responses (respects privacy settings)
+type PublicSpotterLocation struct {
+	UserID     *uint   `json:"user_id,omitempty"`      // Hidden if identity is hidden
+	Username   string  `json:"username"`               // Shows "Anonymous User" if hidden
 	Latitude   float64 `json:"latitude"`
 	Longitude  float64 `json:"longitude"`
-	LastUpdate int64   `json:"last_update"` // Unix milliseconds
+	LastUpdate int64   `json:"last_update"`
 	IsActive   bool    `json:"is_active"`
 }
 
-// SpottersResponse for API responses
+// SpottersResponse for public API responses
 type SpottersResponse struct {
+	Spotters    []PublicSpotterLocation `json:"spotters"`
+	Total       int                     `json:"total"`
+	LastUpdated string                  `json:"last_updated"`
+}
+
+// AdminSpottersResponse for admin API responses (shows all data)
+type AdminSpottersResponse struct {
 	Spotters    []SpotterLocation `json:"spotters"`
 	Total       int               `json:"total"`
+	Hidden      int               `json:"hidden_from_public"` // Count of hidden spotters
 	LastUpdated string            `json:"last_updated"`
 }
 
@@ -71,8 +93,10 @@ func (h *SpotterHandler) UpdateSpotterLocation(c *gin.Context) {
 	}
 
 	var req struct {
-		Latitude  float64 `json:"latitude" binding:"required,min=-90,max=90"`
-		Longitude float64 `json:"longitude" binding:"required,min=-180,max=180"`
+		Latitude     float64 `json:"latitude" binding:"required,min=-90,max=90"`
+		Longitude    float64 `json:"longitude" binding:"required,min=-180,max=180"`
+		HideLocation bool    `json:"hide_location"` // Hide from public completely
+		HideIdentity bool    `json:"hide_identity"` // Show as anonymous
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -83,23 +107,25 @@ func (h *SpotterHandler) UpdateSpotterLocation(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("DEBUG: User %d updating spotter location: (%.6f, %.6f)\n", 
-		user.ID, req.Latitude, req.Longitude)
+	fmt.Printf("DEBUG: User %d updating spotter location: (%.6f, %.6f), hide_location: %t, hide_identity: %t\n", 
+		user.ID, req.Latitude, req.Longitude, req.HideLocation, req.HideIdentity)
 
 	// Create spotter location data
 	spotter := SpotterLocation{
-		UserID:     user.ID,
-		Username:   func() string {
-			if user.Username != nil {
+		UserID:       user.ID,
+		Username:     func() string {
+			if user.Username != nil && *user.Username != "" {
 				return *user.Username
 			}
-			return user.Name
+			return user.Name // Fallback to name if username is empty
 		}(),
-		Name:       user.Name,
-		Latitude:   req.Latitude,
-		Longitude:  req.Longitude,
-		LastUpdate: time.Now().UnixMilli(),
-		IsActive:   true,
+		Name:         user.Name,
+		Latitude:     req.Latitude,
+		Longitude:    req.Longitude,
+		LastUpdate:   time.Now().UnixMilli(),
+		IsActive:     true,
+		HideLocation: req.HideLocation,
+		HideIdentity: req.HideIdentity,
 	}
 
 	// Store in Redis with 5-minute expiration
@@ -119,16 +145,34 @@ func (h *SpotterHandler) UpdateSpotterLocation(c *gin.Context) {
 }
 
 // GetActiveSpotters handles GET /api/spotters/active
+// Returns filtered results for public users, full results for admins
 func (h *SpotterHandler) GetActiveSpotters(c *gin.Context) {
 	fmt.Printf("DEBUG: Request for active spotters list\n")
 	
+	// Check if user is authenticated and has admin role
+	user, exists := middleware.GetUserFromContext(c)
+	isAdmin := exists && user.Role == "admin"
+	
+	if isAdmin {
+		fmt.Printf("DEBUG: Admin user %d requesting spotter list\n", user.ID)
+	}
+	
 	if h.redis == nil {
 		// No Redis available, return empty list
-		c.JSON(http.StatusOK, SpottersResponse{
-			Spotters:    []SpotterLocation{},
-			Total:       0,
-			LastUpdated: time.Now().Format(time.RFC3339),
-		})
+		if isAdmin {
+			c.JSON(http.StatusOK, AdminSpottersResponse{
+				Spotters:    []SpotterLocation{},
+				Total:       0,
+				Hidden:      0,
+				LastUpdated: time.Now().Format(time.RFC3339),
+			})
+		} else {
+			c.JSON(http.StatusOK, SpottersResponse{
+				Spotters:    []PublicSpotterLocation{},
+				Total:       0,
+				LastUpdated: time.Now().Format(time.RFC3339),
+			})
+		}
 		return
 	}
 
@@ -139,14 +183,63 @@ func (h *SpotterHandler) GetActiveSpotters(c *gin.Context) {
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
 	
+	// Admin users get full unfiltered data
+	if isAdmin {
+		// Count hidden spotters for admin statistics
+		hiddenCount := 0
+		for _, spotter := range spotters {
+			if spotter.HideLocation {
+				hiddenCount++
+			}
+		}
+		
+		c.JSON(http.StatusOK, AdminSpottersResponse{
+			Spotters:    spotters,
+			Total:       len(spotters),
+			Hidden:      hiddenCount,
+			LastUpdated: time.Now().Format(time.RFC3339),
+		})
+		
+		fmt.Printf("DEBUG: Returned %d total spotters to admin (%d hidden from public)\n", len(spotters), hiddenCount)
+		return
+	}
+	
+	// Public users get filtered data - respect privacy settings
+	var publicSpotters []PublicSpotterLocation
+	for _, spotter := range spotters {
+		// Skip spotters who hide their location completely
+		if spotter.HideLocation {
+			continue
+		}
+		
+		publicSpotter := PublicSpotterLocation{
+			Latitude:   spotter.Latitude,
+			Longitude:  spotter.Longitude,
+			LastUpdate: spotter.LastUpdate,
+			IsActive:   spotter.IsActive,
+		}
+		
+		// Handle identity privacy
+		if spotter.HideIdentity {
+			publicSpotter.Username = "Anonymous User"
+			// Don't include UserID for anonymous users
+		} else {
+			publicSpotter.UserID = &spotter.UserID
+			publicSpotter.Username = spotter.Username
+		}
+		
+		publicSpotters = append(publicSpotters, publicSpotter)
+	}
+	
 	c.JSON(http.StatusOK, SpottersResponse{
-		Spotters:    spotters,
-		Total:       len(spotters),
+		Spotters:    publicSpotters,
+		Total:       len(publicSpotters),
 		LastUpdated: time.Now().Format(time.RFC3339),
 	})
 	
-	fmt.Printf("DEBUG: Returned %d active spotters\n", len(spotters))
+	fmt.Printf("DEBUG: Returned %d public spotters (filtered from %d total)\n", len(publicSpotters), len(spotters))
 }
+
 
 // storeSpotterLocation stores spotter data in Redis
 func (h *SpotterHandler) storeSpotterLocation(spotter SpotterLocation) error {

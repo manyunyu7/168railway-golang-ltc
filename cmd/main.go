@@ -447,7 +447,9 @@ func main() {
 		{
 			// Send location heartbeat (requires Sanctum token)
 			spotters.POST("/heartbeat", authMiddleware.SanctumAuth(), spotterHandler.UpdateSpotterLocation)
-			// Get active spotters (public endpoint for map display)
+			// Get active spotters (auto-detects admin from token)
+			// - Public users: filtered results respecting privacy settings
+			// - Admin users: full unfiltered results with all data
 			spotters.GET("/active", spotterHandler.GetActiveSpotters)
 		}
 	}
