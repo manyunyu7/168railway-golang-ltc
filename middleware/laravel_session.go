@@ -1,173 +1,240 @@
 package middleware
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	
+
 	"github.com/modernland/golang-live-tracking/models"
 )
 
-// UserSession represents the custom user_sessions table structure
-type UserSession struct {
-	ID           uint      `json:"id" gorm:"primaryKey"`
-	UserID       uint      `json:"user_id"`
-	SessionID    string    `json:"session_id"`
-	UserAgent    string    `json:"user_agent"`
-	IPAddress    *string   `json:"ip_address"`
-	LastActiveAt time.Time `json:"last_active_at"`
-	CreatedAt    *time.Time `json:"created_at"`
-	UpdatedAt    *time.Time `json:"updated_at"`
+type LaravelSessionMiddleware struct {
+	db *gorm.DB
 }
 
-func (UserSession) TableName() string {
-	return "user_sessions"
+func NewLaravelSessionMiddleware(db *gorm.DB) *LaravelSessionMiddleware {
+	return &LaravelSessionMiddleware{
+		db: db,
+	}
 }
 
-// LaravelSessionAuth validates Laravel session cookies using the user_sessions table
-func LaravelSessionAuth(db *gorm.DB) gin.HandlerFunc {
+// AuthOrSession provides flexible authentication (Sanctum OR Laravel session OR anonymous)
+func (m *LaravelSessionMiddleware) AuthOrSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		fmt.Printf("DEBUG: Attempting Laravel session authentication\n")
-		
-		// Try multiple common Laravel session cookie names
-		sessionCookieNames := []string{
-			"laravel_session",
-			"168railway_session", 
-			"trainradar_session",
-			"XSRF-TOKEN",
-		}
-		
-		var sessionID string
-		var cookieName string
-		
-		// Try to find a valid session cookie
-		for _, name := range sessionCookieNames {
-			if cookie, err := c.Cookie(name); err == nil && cookie != "" {
-				// Decode URL-encoded cookie if needed
-				if decoded, err := url.QueryUnescape(cookie); err == nil {
-					sessionID = decoded
-				} else {
-					sessionID = cookie
-				}
-				cookieName = name
-				fmt.Printf("DEBUG: Found session cookie '%s': %s...\n", name, sessionID[:min(20, len(sessionID))])
-				break
-			}
-		}
-		
-		if sessionID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Laravel session cookie required",
-				"expected_cookies": sessionCookieNames,
-			})
-			c.Abort()
+		// Try Sanctum authentication first (for mobile users)
+		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+			// Let Sanctum middleware handle this
+			c.Next()
 			return
 		}
 
-		// Decode Laravel session cookie to get actual session ID
-		actualSessionID, err := decodeLaravelSessionCookie(sessionID)
-		if err != nil {
-			fmt.Printf("DEBUG: Failed to decode session cookie: %v\n", err)
-			// Try using the cookie value directly as session ID
-			actualSessionID = sessionID
-		}
-
-		fmt.Printf("DEBUG: Looking up session ID: %s\n", actualSessionID)
-
-		// Look up session in user_sessions table
-		var userSession UserSession
-		result := db.Where("session_id = ?", actualSessionID).
-			Where("last_active_at > ?", time.Now().Add(-24*time.Hour)). // Active within 24 hours
-			First(&userSession)
-			
-		if result.Error != nil {
-			fmt.Printf("DEBUG: Session not found in user_sessions: %v\n", result.Error)
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "Invalid or expired Laravel session",
-				"session_id": actualSessionID,
-			})
-			c.Abort()
+		// Try Laravel session authentication (for web users)
+		user := m.validateLaravelSession(c)
+		if user != nil {
+			// Valid Laravel session
+			c.Set("user", user)
+			c.Set("user_type", "web_authenticated")
+			c.Set("auth_method", "laravel_session")
+			fmt.Printf("DEBUG: Web user authenticated via Laravel session: %d (%s)\n", user.ID, user.Name)
+			c.Next()
 			return
 		}
 
-		// Get user from database
-		var user models.User
-		result = db.First(&user, userSession.UserID)
-		if result.Error != nil {
-			fmt.Printf("DEBUG: User not found for session: %v\n", result.Error)
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"success": false,
-				"message": "User not found for session",
-			})
-			c.Abort()
-			return
-		}
-
-		fmt.Printf("DEBUG: Laravel session authenticated user %d (%s) via cookie '%s'\n", 
-			user.ID, user.Name, cookieName)
-
-		// Store user in context
-		c.Set("user", user)
+		// No authentication - allow as anonymous web user with rate limiting
+		c.Set("user_type", "web_anonymous") 
+		c.Set("auth_method", "none")
+		c.Set("rate_limit_key", c.ClientIP()) // Use IP for rate limiting
+		fmt.Printf("DEBUG: Anonymous web user allowed from IP: %s\n", c.ClientIP())
 		c.Next()
 	}
 }
 
-// decodeLaravelSessionCookie attempts to decode Laravel session cookie
-func decodeLaravelSessionCookie(cookieValue string) (string, error) {
-	// Laravel session cookies are typically base64 encoded
-	// Format: base64(session_id.payload.signature)
-	
-	// Try base64 decoding first
-	decoded, err := base64.StdEncoding.DecodeString(cookieValue)
-	if err == nil {
-		decodedStr := string(decoded)
-		// Look for session ID pattern in decoded data
-		if len(decodedStr) > 10 {
-			return decodedStr, nil
-		}
-	}
-	
-	// If base64 decode fails or result is too short, try URL decode
-	urlDecoded, err := url.QueryUnescape(cookieValue)
-	if err == nil && urlDecoded != cookieValue {
-		return urlDecoded, nil
-	}
-	
-	// Return original value if no decoding works
-	return cookieValue, nil
-}
-
-// FlexibleAuth supports both Sanctum tokens and Laravel sessions
-func FlexibleAuth(db *gorm.DB) gin.HandlerFunc {
+// RequireAuthOrSession requires either Sanctum token OR Laravel session
+func (m *LaravelSessionMiddleware) RequireAuthOrSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		fmt.Printf("DEBUG: FlexibleAuth - checking authentication methods\n")
-		
-		// Try Sanctum first (for mobile apps)
-		authHeader := c.GetHeader("Authorization")
-		if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
-			fmt.Printf("DEBUG: Using Sanctum authentication\n")
-			// Use Sanctum authentication
-			sanctumAuth := NewAuthMiddleware(db).SanctumAuth()
-			sanctumAuth(c)
+		// Try Sanctum first
+		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+			// Let Sanctum middleware handle validation
+			c.Next()
 			return
 		}
 
-		// Try Laravel session (for web apps)
-		fmt.Printf("DEBUG: Trying Laravel session authentication\n")
-		laravelAuth := LaravelSessionAuth(db)
-		laravelAuth(c)
+		// Try Laravel session
+		user := m.validateLaravelSession(c)
+		if user != nil {
+			c.Set("user", user)
+			c.Set("user_type", "web_authenticated")
+			c.Set("auth_method", "laravel_session")
+			c.Next()
+			return
+		}
+
+		// No valid authentication
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"success": false,
+			"message": "Authentication required - please login via mobile app or web",
+		})
+		c.Abort()
 	}
 }
 
-// Helper function for min
+// validateLaravelSession validates Laravel session cookie and returns user
+func (m *LaravelSessionMiddleware) validateLaravelSession(c *gin.Context) *models.User {
+	// Get all cookies and find Laravel session
+	cookies := c.Request.Header.Get("Cookie")
+	if cookies == "" {
+		return nil
+	}
+
+	// Parse cookies to find Laravel session ID
+	sessionID := m.extractSessionIDFromCookies(cookies)
+	if sessionID == "" {
+		return nil
+	}
+
+	fmt.Printf("DEBUG: Found Laravel session ID: %s\n", sessionID[:min(len(sessionID), 20)]+"...")
+
+	// Look up session in database
+	var session models.LaravelSession
+	if err := m.db.Where("id = ?", sessionID).First(&session).Error; err != nil {
+		fmt.Printf("DEBUG: Laravel session not found: %v\n", err)
+		return nil
+	}
+
+	// Check if session is still active (within last 2 hours)
+	lastActivity := time.Unix(session.LastActivity, 0)
+	if time.Since(lastActivity) > 2*time.Hour {
+		fmt.Printf("DEBUG: Laravel session expired (last activity: %v)\n", lastActivity)
+		return nil
+	}
+
+	// If session has direct user_id, use it
+	if session.UserID != nil {
+		var user models.User
+		if err := m.db.First(&user, *session.UserID).Error; err != nil {
+			fmt.Printf("DEBUG: User %d from session not found: %v\n", *session.UserID, err)
+			return nil
+		}
+		return &user
+	}
+
+	// Parse Laravel session payload to extract user login
+	userID := m.parseUserFromPayload(session.Payload)
+	if userID == nil {
+		fmt.Printf("DEBUG: No user login found in Laravel session payload\n")
+		return nil
+	}
+
+	// Fetch user from database
+	var user models.User
+	if err := m.db.First(&user, *userID).Error; err != nil {
+		fmt.Printf("DEBUG: User %d from session payload not found: %v\n", *userID, err)
+		return nil
+	}
+
+	return &user
+}
+
+// extractSessionIDFromCookies extracts Laravel session ID from cookies
+func (m *LaravelSessionMiddleware) extractSessionIDFromCookies(cookies string) string {
+	// Common Laravel session cookie names
+	sessionNames := []string{
+		"laravel_session",
+		"168railway_session", // Custom session name
+		"trainradar35_session",
+	}
+
+	// Parse cookie string
+	for _, cookie := range strings.Split(cookies, ";") {
+		cookie = strings.TrimSpace(cookie)
+		parts := strings.SplitN(cookie, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		cookieName := strings.TrimSpace(parts[0])
+		cookieValue := strings.TrimSpace(parts[1])
+
+		// Check if this is a Laravel session cookie
+		for _, sessionName := range sessionNames {
+			if cookieName == sessionName {
+				return cookieValue
+			}
+		}
+	}
+
+	return ""
+}
+
+// parseUserFromPayload extracts user ID from Laravel session payload
+func (m *LaravelSessionMiddleware) parseUserFromPayload(payload string) *uint {
+	// Laravel session payload is usually serialized PHP data or JSON
+	// Look for user login patterns
+	
+	// Try to parse as JSON first
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(payload), &data); err == nil {
+		// Look for Laravel Auth session keys
+		authKeys := []string{
+			"login_web_59ba36addc2b2f9401580f014c7f58ea4e30989d", // Default Laravel auth key
+			"auth_user_id",
+			"user_id", 
+			"authenticated_user",
+		}
+		
+		for _, key := range authKeys {
+			if userID, exists := data[key]; exists {
+				if id, ok := userID.(float64); ok {
+					userIDUint := uint(id)
+					return &userIDUint
+				}
+			}
+		}
+	}
+
+	// Fallback: Simple string parsing for Laravel session format
+	// Look for user ID patterns in serialized data
+	if strings.Contains(payload, "login_web_") {
+		// Laravel stores user login as: s:66:"login_web_59ba36addc2b2f9401580f014c7f58ea4e30989d";i:123;
+		// This is a simplified parser - production would need proper PHP serialization parsing
+		patterns := []string{
+			`login_web_59ba36addc2b2f9401580f014c7f58ea4e30989d";i:`,
+			`"auth_user_id";i:`,
+			`"user_id";i:`,
+		}
+
+		for _, pattern := range patterns {
+			if idx := strings.Index(payload, pattern); idx != -1 {
+				start := idx + len(pattern)
+				end := strings.Index(payload[start:], ";")
+				if end != -1 {
+					userIDStr := payload[start : start+end]
+					if userID := parseUint(userIDStr); userID != nil {
+						return userID
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// parseUint safely parses string to uint
+func parseUint(s string) *uint {
+	var id uint
+	if _, err := fmt.Sscanf(s, "%d", &id); err == nil {
+		return &id
+	}
+	return nil
+}
+
+// min returns minimum of two integers
 func min(a, b int) int {
 	if a < b {
 		return a

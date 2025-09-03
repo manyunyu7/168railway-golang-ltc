@@ -155,13 +155,15 @@ func main() {
 		wsHandler.SetRedisClient(redisClient)
 	}
 	// Initialize API endpoints handler
-	apiEndpointsHandler := handlers.NewAPIEndpointsHandler(db)
+	apiEndpointsHandler := handlers.NewAPIEndpointsHandler(db, redisClient)
 	// Initialize tile proxy handler for CartoDB tiles
 	tileProxyHandler := handlers.NewTileProxyHandler()
 	// Initialize admin handler for session management
 	adminHandler := handlers.NewAdminHandler(db)
 	// Initialize web admin handler for dashboard
 	webAdminHandler := handlers.NewWebAdminHandler(db)
+	// Initialize spotter location handler for map user presence
+	spotterHandler := handlers.NewSpotterHandler(db, redisClient)
 
 	// Setup routes
 	r := gin.Default()
@@ -438,6 +440,15 @@ func main() {
 				liveTracking.POST("/recover", liveTrackingHandler.RecoverSession)
 				liveTracking.POST("/stop", liveTrackingHandler.StopMobileSession)
 			}
+		}
+		
+		// Spotter location routes for map user presence
+		spotters := api.Group("/spotters")
+		{
+			// Send location heartbeat (requires Sanctum token)
+			spotters.POST("/heartbeat", authMiddleware.SanctumAuth(), spotterHandler.UpdateSpotterLocation)
+			// Get active spotters (public endpoint for map display)
+			spotters.GET("/active", spotterHandler.GetActiveSpotters)
 		}
 	}
 

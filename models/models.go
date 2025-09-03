@@ -69,6 +69,13 @@ type Position struct {
 	Lng float64 `json:"lng"`
 }
 
+// UserStatus represents a passenger's current status message
+type UserStatus struct {
+	Emoji     string `json:"emoji"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
 type Passenger struct {
 	UserID      uint    `json:"userId"`
 	Name        string  `json:"name"`        // User's full name
@@ -80,11 +87,12 @@ type Passenger struct {
 	Lng         float64 `json:"lng"`
 	Timestamp   int64   `json:"timestamp"`
 	SessionID   string  `json:"sessionId"`
-	Accuracy    *float64 `json:"accuracy,omitempty"`
-	Speed       *float64 `json:"speed,omitempty"`
-	Heading     *float64 `json:"heading,omitempty"`
-	Altitude    *float64 `json:"altitude,omitempty"`
-	Status      string  `json:"status"`
+	Accuracy    *float64    `json:"accuracy,omitempty"`
+	Speed       *float64    `json:"speed,omitempty"`
+	Heading     *float64    `json:"heading,omitempty"`
+	Altitude    *float64    `json:"altitude,omitempty"`
+	SessionStatus string    `json:"sessionStatus"`           // Session status: "active", "inactive", etc.
+	UserStatus  *UserStatus `json:"status,omitempty"`        // User's custom status with emoji and message
 }
 
 // Trip model matching Laravel trips table
@@ -175,6 +183,22 @@ type Station struct {
 
 func (Station) TableName() string {
 	return "stations"
+}
+
+// LaravelSession represents Laravel session data (for web users)
+type LaravelSession struct {
+	ID           string    `json:"id" gorm:"primaryKey;column:id"`
+	UserID       *uint     `json:"user_id" gorm:"column:user_id"`
+	IPAddress    *string   `json:"ip_address" gorm:"column:ip_address"`
+	UserAgent    *string   `json:"user_agent" gorm:"column:user_agent"`
+	Payload      string    `json:"payload" gorm:"column:payload"`
+	LastActivity int64     `json:"last_activity" gorm:"column:last_activity"`
+	CreatedAt    *time.Time `json:"created_at" gorm:"column:created_at"`
+	UpdatedAt    *time.Time `json:"updated_at" gorm:"column:updated_at"`
+}
+
+func (LaravelSession) TableName() string {
+	return "sessions"
 }
 
 // Platform model matching Laravel platforms table
